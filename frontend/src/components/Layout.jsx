@@ -2,16 +2,49 @@ import { useState, useEffect, useCallback } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useSocket } from '../context/SocketContext'
 
-// NPS logo embedded as base64 - works completely offline
-const NPS_LOGO = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAABCGlDQ1BJQ0MgUHJvZmlsZQAAeJxjYGA8wQAELAYMDLl5JUVB7k4KEZFRCuwPGBiBEAwSk4sLGHADoKpv1yBqL+viUYcLcKakFicD6Q9ArFIEtBxopAiQLZIOYWuA2EkQtg2IXV5SUAJkB4DYRSFBzkB2CpCtkY7ETkJiJxcUgdT3ANk2uTmlyQh3M/Ck5oUGA2kOIJZhKGYIYnBncAL5H6IkfxEDg8VXBgbmCQixpJkMDNtbGRgkbiHEVBYwMPC3MDBsO48QQ4RJQWJRIliIBYiZ0tIYGD4tZ2DgjWRgEL7AwMAVDQsIHG5TALvNnSEfCNMZchhSgSKeDHkMyQx6QJYRgwGDIYMZAKbWPz9HbOBQAAAP30lEQVR42u2ZeZRU1Z3HP/cttXdV9b5A09C0zdLsIJuBZlEkoCYmKZLoxKCT0cm4RI0RMc4pW3PMqjPRcY7RmSRmNTTGrRXFBRpFWVoElKbZoYGm964u272/qlJ3/O69qNICoiI55x+/c06q6la98rv3d3/fJr9QgqREREQAAA=='
+// Inline SVG badge — no external image dependency, works completely offline.
+// Replace with <img src="/nps-logo.png" .../> if you add a real logo to public/.
+function NPSBadge() {
+  return (
+    <svg
+      width="24" height="24" viewBox="0 0 24 24"
+      fill="none" xmlns="http://www.w3.org/2000/svg"
+      style={{ flexShrink: 0 }}
+    >
+      <defs>
+        <linearGradient id="nps-g" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+          <stop offset="0%"   stopColor="#4f46e5" />
+          <stop offset="100%" stopColor="#06b6d4" />
+        </linearGradient>
+      </defs>
+      {/* Shield shape */}
+      <path
+        d="M12 2L3 6v6c0 5.25 3.9 10.15 9 11.35C17.1 22.15 21 17.25 21 12V6L12 2z"
+        fill="url(#nps-g)"
+      />
+      {/* NPS text */}
+      <text
+        x="12" y="15"
+        textAnchor="middle"
+        fill="white"
+        fontSize="6.5"
+        fontWeight="800"
+        fontFamily="'Sora', 'Segoe UI', sans-serif"
+        letterSpacing="0.3"
+      >
+        NPS
+      </text>
+    </svg>
+  )
+}
 
 const NAV = [
-  { to: '/',         icon: '⬡', label: 'Dashboard',         section: 'Main' },
-  { to: '/cameras',  icon: '⊕', label: 'Live Cameras',      section: 'Main' },
-  { to: '/enroll',   icon: '◊', label: 'Enroll Students',   section: 'Main' },
-  { to: '/reports',  icon: '▦', label: 'Attendance Records',section: 'Reports' },
-  { to: '/manage',   icon: '⌾', label: 'Manage',            section: 'System' },
-  { to: '/settings', icon: '⚙', label: 'Settings',          section: 'System' },
+  { to: '/',         icon: '⬡', label: 'Dashboard',          section: 'Main'    },
+  { to: '/cameras',  icon: '⊕', label: 'Live Cameras',       section: 'Main'    },
+  { to: '/enroll',   icon: '◊', label: 'Enroll Students',    section: 'Main'    },
+  { to: '/reports',  icon: '▦', label: 'Attendance Records', section: 'Reports' },
+  { to: '/manage',   icon: '⌾', label: 'Manage',             section: 'System'  },
+  { to: '/settings', icon: '⚙', label: 'Settings',           section: 'System'  },
 ]
 
 const PAGE_TITLES = {
@@ -35,26 +68,22 @@ export default function Layout({ children, enrolledCount = 0 }) {
     function tick() {
       const now = new Date()
       setClock(now.toLocaleTimeString('en-IN', { hour12: false }))
-      setDate(now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))
+      setDate(now.toLocaleDateString('en-IN', {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      }))
     }
     tick()
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
   }, [])
 
-  // Close sidebar when clicking outside
   const closeOverlay = useCallback(() => setSidebarOpen(false), [])
-
-  // Close sidebar on nav click (mobile)
-  const onNavClick = useCallback(() => {
+  const onNavClick   = useCallback(() => {
     if (window.innerWidth <= 900) setSidebarOpen(false)
   }, [])
 
-  // Current page title
   const pageTitle = PAGE_TITLES[location.pathname] || 'FaceTrack AI'
-
-  // Group nav items by section
-  const sections = ['Main', 'Reports', 'System']
+  const sections  = ['Main', 'Reports', 'System']
 
   const handleLogout = async () => {
     await fetch('/logout', { credentials: 'include' })
@@ -63,7 +92,8 @@ export default function Layout({ children, enrolledCount = 0 }) {
 
   return (
     <div className="app-shell">
-      {/* Sidebar */}
+
+      {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
       <nav className={`sidebar${sidebarOpen ? ' open' : ''}`}>
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">👁</div>
@@ -95,16 +125,20 @@ export default function Layout({ children, enrolledCount = 0 }) {
 
         <div className="sidebar-spacer" />
 
+        {/* System status */}
         <div className="sidebar-status">
           <div className="flex" style={{ marginBottom: 6 }}>
             <span className={`sdot ${connected ? 'green' : 'yellow'}`} />
-            <span className="status-text">{connected ? 'System Live' : 'Connecting...'}</span>
+            <span className="status-text">
+              {connected ? 'System Live' : 'Connecting...'}
+            </span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text3)' }}>
             {enrolledCount} student(s) enrolled
           </div>
         </div>
 
+        {/* Logout */}
         <button
           onClick={handleLogout}
           style={{
@@ -115,16 +149,22 @@ export default function Layout({ children, enrolledCount = 0 }) {
             fontSize: 13, fontWeight: 500, marginTop: 6, width: '100%',
             fontFamily: "'Sora', sans-serif", transition: 'all .18s',
           }}
-          onMouseOver={e => { e.currentTarget.style.borderColor = 'var(--danger)'; e.currentTarget.style.color = 'var(--danger)' }}
-          onMouseOut={e  => { e.currentTarget.style.borderColor = 'var(--border)';  e.currentTarget.style.color = 'var(--text3)' }}
+          onMouseOver={e => {
+            e.currentTarget.style.borderColor = 'var(--danger)'
+            e.currentTarget.style.color = 'var(--danger)'
+          }}
+          onMouseOut={e => {
+            e.currentTarget.style.borderColor = 'var(--border)'
+            e.currentTarget.style.color = 'var(--text3)'
+          }}
         >
           ⇒ Logout
         </button>
 
-        {/* Credits footer */}
+        {/* ── School credits footer ────────────────────────────────────────── */}
         <div className="sidebar-credits">
           <div className="credits-school">
-            <img src={NPS_LOGO} alt="NPS" className="credits-logo" />
+            <NPSBadge />
             <span className="credits-name">Narula Public School</span>
           </div>
           <div className="credits-sub">
@@ -140,7 +180,7 @@ export default function Layout({ children, enrolledCount = 0 }) {
         onClick={closeOverlay}
       />
 
-      {/* Main content */}
+      {/* ── Main content ─────────────────────────────────────────────────────── */}
       <div className="main-area">
         <header className="header">
           <button className="hburger" onClick={() => setSidebarOpen(o => !o)}>☰</button>

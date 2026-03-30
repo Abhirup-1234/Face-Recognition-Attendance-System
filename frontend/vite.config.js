@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import path from 'path'
+import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [react()],
@@ -10,14 +10,27 @@ export default defineConfig({
 
   build: {
     // Output goes into frontend/dist/ — served by Flask
-    outDir: path.resolve(__dirname, 'dist'),
+    outDir: resolve(import.meta.dirname, 'dist'),
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          socket: ['socket.io-client'],
+        // Refactored to Function syntax for Vite 8 / Rolldown compatibility
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            // Group Socket.io separately
+            if (id.includes('socket.io-client')) {
+              return 'socket';
+            }
+            // Group React core libraries
+            if (
+              id.includes('react') || 
+              id.includes('react-dom') || 
+              id.includes('react-router-dom')
+            ) {
+              return 'vendor';
+            }
+          }
         },
       },
     },
