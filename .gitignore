@@ -1,0 +1,39 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+
+# ── Runtime data (generated at runtime, not source code) ──────────────────────
+data/
+settings.json
+logs/
+
+# ── AI Models (large binary files — use download_models.bat) ──────────────────
+models/
+
+# ── Frontend build output (recipients run: cd frontend && npm run build) ──────
+frontend/dist/
+frontend/node_modules/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
