@@ -37,7 +37,6 @@ function today() { return new Date().toISOString().split('T')[0] }
 export default function Settings() {
   const toast = useToast()
 
-  // Defaults — overwritten when settings load
   const [s, setS] = useState({
     REC_THRESHOLD:          0.40,
     DET_THRESH:             0.50,
@@ -104,7 +103,7 @@ export default function Settings() {
   const clearToday = async () => {
     if (!confirm('Clear all attendance records for today?')) return
     const res = await attendanceApi.clearDay(today())
-    if (res?.data?.ok) toast('Today\'s attendance cleared.', 'success')
+    if (res?.data?.ok) toast("Today's attendance cleared.", 'success')
   }
 
   const clearAll = async () => {
@@ -123,7 +122,8 @@ export default function Settings() {
   return (
     <div>
       <div className="g2" style={{ gap: 20, alignItems: 'start' }}>
-        {/* Left column */}
+
+        {/* ── Left column ──────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
           {/* Recognition */}
@@ -206,16 +206,8 @@ export default function Settings() {
           </div>
         </div>
 
-        {/* Right column */}
+        {/* ── Right column ─────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-          {/* Attendance */}
-          <div className="card">
-            <div className="card-title"><span className="card-icon">◊</span> Attendance Logic</div>
-            <div style={{ fontSize: 13, color: 'var(--text3)', padding: '4px 0' }}>
-              Each student is marked present <strong style={{ color: 'var(--text2)' }}>once per day</strong> across all cameras.
-            </div>
-          </div>
 
           {/* School info */}
           <div className="card">
@@ -294,12 +286,14 @@ export default function Settings() {
         {saveMsg && (
           <span style={{
             fontSize: 12, color: saveMsg === 'Saved' ? 'var(--success)' : 'var(--danger)',
-            background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '5px 10px',
+            background: 'var(--bg2)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)', padding: '5px 10px',
           }}>
             {saveMsg}
           </span>
         )}
-        <button className="btn btn-primary" style={{ boxShadow: '0 4px 20px rgba(79,70,229,.45)' }} onClick={save} disabled={saving}>
+        <button className="btn btn-primary" style={{ boxShadow: '0 4px 20px rgba(79,70,229,.45)' }}
+          onClick={save} disabled={saving}>
           {saving ? <span className="spin" /> : '✓'} Save All Settings
         </button>
       </div>

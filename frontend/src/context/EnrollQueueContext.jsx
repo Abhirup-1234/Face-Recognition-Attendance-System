@@ -1,154 +1,188 @@
-import {
-  createContext, useContext, useReducer,
-  useEffect, useRef, useCallback, useState
-} from 'react'
+import { createContext, useContext, useState, useRef, useCallback } from 'react'
 import { students as studentsApi } from '../api'
-import { useToast } from './ToastContext'
 
-const QueueContext = createContext(null)
-
-const STATUS = { WAITING: 'waiting', ENROLLING: 'enrolling', DONE: 'done', ERROR: 'error' }
-
-function reducer(state, action) {
-  switch (action.type) {
-    case 'ADD':
-      return { ...state, items: [...state.items, action.item] }
-    case 'UPDATE':
-      return {
-        ...state,
-        items: state.items.map(i =>
-          i.id === action.id ? { ...i, ...action.updates } : i
-        ),
-      }
-    case 'REMOVE':
-      return { ...state, items: state.items.filter(i => i.id !== action.id) }
-    case 'CLEAR_DONE':
-      return { ...state, items: state.items.filter(i => i.status !== STATUS.DONE) }
-    default:
-      return state
-  }
-}
-
-let _qid = 0
+const EnrollQueueContext = createContext(null)
 
 export function EnrollQueueProvider({ children }) {
-  const [state, dispatch] = useReducer(reducer, { items: [] })
-  const [collapsed, setCollapsed] = useState(false)
-  const processingRef = useRef(false)
-  const toast = useToast()
+  const [queue,    setQueue]    = useState([])   // exposed so consumers can watch length
+  const [current,  setCurrent]  = useState(null) // item currently being processed
+  const [progress, setProgress] = useState(0)    // 0–100
+  const processing = useRef(false)
 
-  // Auto-process queue sequentially
-  useEffect(() => {
-    async function processNext() {
-      if (processingRef.current) return
-      const next = state.items.find(i => i.status === STATUS.WAITING)
-      if (!next) return
+  // Process items one by one
+  const processNext = useCallback(async (q) => {
+    if (processing.current || q.length === 0) return
+    processing.current = true
 
-      processingRef.current = true
-      dispatch({ type: 'UPDATE', id: next.id, updates: { status: STATUS.ENROLLING, progress: 10, message: 'Uploading photos...' } })
+    const item = q[0]
+    setCurrent(item)
+    setProgress(0)
 
+    try {
+      // Build FormData
       const fd = new FormData()
-      fd.append('student_id',  next.studentData.student_id)
-      fd.append('name',        next.studentData.name)
-      fd.append('class_name',  next.studentData.class_name)
-      fd.append('section',     next.studentData.section)
-      fd.append('roll_no',     next.studentData.roll_no)
-      next.photos.forEach((blob, i) => fd.append('photos', blob, `photo_${i}.jpg`))
-      next.files?.forEach(f => fd.append('photos', f))
+      const meta = item.meta
+      fd.append('student_id', meta.student_id)
+      fd.append('name',       meta.name)
+      fd.append('class_name', meta.class_name)
+      fd.append('section',    meta.section)
+      fd.append('roll_no',    meta.roll_no)
 
-      dispatch({ type: 'UPDATE', id: next.id, updates: { progress: 50, message: 'Building face embeddings...' } })
+      const images = [...(item.blobs || []), ...(item.files || [])]
+      images.forEach((img, i) => {
+        if (img instanceof Blob) fd.append('images', img, `capture_${i}.jpg`)
+        else                      fd.append('images', img)
+      })
 
-      try {
-        const res = await studentsApi.enroll(fd)
-        dispatch({ type: 'UPDATE', id: next.id, updates: { progress: 90, message: 'Finalising...' } })
+      // Fake progress while uploading
+      let tick = 0
+      const timer = setInterval(() => {
+        tick += Math.random() * 12
+        setProgress(Math.min(tick, 90))
+      }, 300)
 
-        if (res?.data?.ok) {
-          dispatch({ type: 'UPDATE', id: next.id, updates: { status: STATUS.DONE, progress: 100, message: 'Enrolled successfully' } })
-          toast(`${next.studentData.name} enrolled successfully!`, 'success')
-          // Auto-remove after 5s
-          setTimeout(() => dispatch({ type: 'REMOVE', id: next.id }), 5000)
-        } else {
-          const err = res?.data?.error || 'Unknown error'
-          dispatch({ type: 'UPDATE', id: next.id, updates: { status: STATUS.ERROR, progress: 0, message: err } })
-          toast(`Failed to enroll ${next.studentData.name}: ${err}`, 'error', 8000)
-        }
-      } catch (e) {
-        dispatch({ type: 'UPDATE', id: next.id, updates: { status: STATUS.ERROR, progress: 0, message: e.message } })
-        toast(`Network error enrolling ${next.studentData.name}`, 'error')
-      } finally {
-        processingRef.current = false
+      const res = await studentsApi.enroll(fd)
+      clearInterval(timer)
+      setProgress(100)
+
+      if (!res?.data?.ok) {
+        console.warn('Enrollment failed for', meta.name, res?.data?.error)
       }
+    } catch (err) {
+      console.error('Enrollment error:', err)
     }
 
-    processNext()
-  }, [state.items, toast])
+    await new Promise(r => setTimeout(r, 600)) // brief pause so user sees 100%
 
-  const addToQueue = useCallback((studentData, photos, files = []) => {
-    dispatch({
-      type: 'ADD',
-      item: {
-        id:          ++_qid,
-        studentData,
-        photos,
-        files,
-        status:      STATUS.WAITING,
-        progress:    0,
-        message:     'Waiting...',
-      },
+    setQueue(prev => {
+      const next = prev.slice(1)
+      setCurrent(null)
+      setProgress(0)
+      processing.current = false
+      // Recursively process the next item
+      setTimeout(() => processNext(next), 50)
+      return next
     })
   }, [])
 
-  const removeFromQueue = useCallback(id => dispatch({ type: 'REMOVE', id }), [])
-  const clearDone       = useCallback(() => dispatch({ type: 'CLEAR_DONE' }), [])
-
-  const visible = state.items.length > 0
+  const addToQueue = useCallback((meta, blobs, files) => {
+    const item = { id: Date.now(), meta, blobs, files }
+    setQueue(prev => {
+      const next = [...prev, item]
+      if (!processing.current) processNext(next)
+      return next
+    })
+  }, [processNext])
 
   return (
-    <QueueContext.Provider value={{ items: state.items, addToQueue, removeFromQueue, clearDone, collapsed, setCollapsed, visible }}>
+    <EnrollQueueContext.Provider value={{ addToQueue, queue }}>
       {children}
-      {visible && <QueuePanel />}
-    </QueueContext.Provider>
+      {/* Queue panel — fixed to bottom-RIGHT corner, never centred */}
+      {(queue.length > 0 || current) && (
+        <QueuePanel queue={queue} current={current} progress={progress} />
+      )}
+    </EnrollQueueContext.Provider>
   )
 }
 
-function QueuePanel() {
-  const { items, removeFromQueue, clearDone, collapsed, setCollapsed } = useContext(QueueContext)
-
-  const waiting   = items.filter(i => i.status === 'waiting').length
-  const enrolling = items.filter(i => i.status === 'enrolling').length
-  const done      = items.filter(i => i.status === 'done').length
-  const errors    = items.filter(i => i.status === 'error').length
-
+function QueuePanel({ queue, current, progress }) {
   return (
-    <div className="queue-panel">
-      <div className="queue-header" onClick={() => setCollapsed(c => !c)}>
-        <div className="queue-header-title">
-          {enrolling > 0 && <span className="spin" />}
-          <span>
-            Enrollment Queue — {items.length} student{items.length !== 1 ? 's' : ''}
-          </span>
-          {done > 0 && <span className="badge badge-green">{done} done</span>}
-          {errors > 0 && <span className="badge badge-red">{errors} failed</span>}
-          {waiting > 0 && <span className="badge badge-yellow">{waiting} waiting</span>}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {done > 0 && (
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={e => { e.stopPropagation(); clearDone() }}
-              style={{ fontSize: 11 }}
-            >
-              Clear done
-            </button>
-          )}
-          <span style={{ color: 'var(--text3)', fontSize: 13 }}>{collapsed ? '▲' : '▼'}</span>
-        </div>
+    <div style={{
+      position: 'fixed',
+      bottom: 24,
+      right: 24,          // ← pinned to the right
+      left: 'auto',       // ← never centred
+      width: 320,
+      background: 'var(--surface)',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--radius)',
+      boxShadow: '0 8px 32px rgba(0,0,0,.45)',
+      zIndex: 1000,
+      overflow: 'hidden',
+      fontFamily: "'Sora', sans-serif",
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: '10px 14px',
+        background: 'var(--surface2)',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text1)' }}>
+          Enrollment Queue
+        </span>
+        <span style={{
+          fontSize: 11.5, fontWeight: 700, letterSpacing: '.5px',
+          background: 'var(--accent)', color: '#fff',
+          borderRadius: 20, padding: '2px 9px',
+        }}>
+          {queue.length} pending
+        </span>
       </div>
 
-      {!collapsed && (
-        <div className="queue-body">
-          {items.map(item => (
-            <QueueItem key={item.id} item={item} onRemove={removeFromQueue} />
+      {/* Current item */}
+      {current && (
+        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 12.5, color: 'var(--text1)', fontWeight: 600 }}>
+              Processing: {current.meta.name}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--accent)', fontFamily: 'Space Mono, monospace' }}>
+              {Math.round(progress)}%
+            </span>
+          </div>
+          {/* Progress bar */}
+          <div style={{
+            height: 5, borderRadius: 999,
+            background: 'var(--border)',
+            overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${progress}%`,
+              background: 'linear-gradient(90deg, var(--accent), var(--accent2, var(--accent)))',
+              borderRadius: 999,
+              transition: 'width .3s ease',
+            }} />
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
+            {current.meta.class_name} · Section {current.meta.section} · Roll {current.meta.roll_no}
+          </div>
+        </div>
+      )}
+
+      {/* Pending items */}
+      {queue.length > 1 && (
+        <div style={{ maxHeight: 160, overflowY: 'auto', padding: '6px 0' }}>
+          {queue.slice(1).map((item, i) => (
+            <div key={item.id} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '6px 14px',
+            }}>
+              <div style={{
+                width: 26, height: 26, borderRadius: '50%',
+                background: 'var(--surface2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 10.5, fontWeight: 700, color: 'var(--text3)',
+                flexShrink: 0,
+              }}>
+                {i + 2}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: 'var(--text1)', fontWeight: 500,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {item.meta.name}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                  {item.meta.class_name} · {item.blobs?.length || item.files?.length || 0} photos
+                </div>
+              </div>
+              <span style={{
+                marginLeft: 'auto', fontSize: 10.5, color: 'var(--text3)',
+                background: 'var(--surface2)', borderRadius: 20, padding: '2px 7px',
+                flexShrink: 0,
+              }}>queued</span>
+            </div>
           ))}
         </div>
       )}
@@ -156,64 +190,8 @@ function QueuePanel() {
   )
 }
 
-function QueueItem({ item, onRemove }) {
-  const statusClass = {
-    waiting:   'status-waiting',
-    enrolling: 'status-enrolling',
-    done:      'status-done',
-    error:     'status-error',
-  }[item.status] || ''
-
-  const statusLabel = {
-    waiting:   'Waiting',
-    enrolling: 'Enrolling...',
-    done:      'Done ✓',
-    error:     'Failed',
-  }[item.status] || item.status
-
-  return (
-    <div className="queue-item">
-      <div className="queue-item-header">
-        <div>
-          <div className="queue-item-name">{item.studentData.name}</div>
-          <div className="queue-item-class">
-            {item.studentData.class_name}-{item.studentData.section} &middot; Roll {item.studentData.roll_no}
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`queue-item-status ${statusClass}`}>{statusLabel}</span>
-          {(item.status === 'done' || item.status === 'error') && (
-            <button
-              className="btn btn-ghost btn-sm"
-              style={{ padding: '2px 8px', fontSize: 11 }}
-              onClick={() => onRemove(item.id)}
-            >✕</button>
-          )}
-        </div>
-      </div>
-
-      {item.status === 'enrolling' && (
-        <div className="queue-item-progress">
-          <div className="pbar-wrap">
-            <div className="pbar" style={{ width: `${item.progress}%` }} />
-          </div>
-          <div className="queue-item-msg">{item.message}</div>
-        </div>
-      )}
-
-      {item.status === 'error' && (
-        <div className="queue-item-msg" style={{ color: 'var(--danger)' }}>
-          {item.message}
-        </div>
-      )}
-
-      {item.status === 'waiting' && (
-        <div className="queue-item-msg">
-          {(item.photos?.length || 0) + (item.files?.length || 0)} photo(s) ready
-        </div>
-      )}
-    </div>
-  )
+export function useEnrollQueue() {
+  const ctx = useContext(EnrollQueueContext)
+  if (!ctx) throw new Error('useEnrollQueue must be used within EnrollQueueProvider')
+  return ctx
 }
-
-export const useEnrollQueue = () => useContext(QueueContext)

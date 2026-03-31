@@ -20,167 +20,132 @@ function stepClass(n, step, i) {
 }
 
 export default function Enroll() {
-  // ── Form state ──────────────────────────────────────────────────────────────
   const [studentId, setStudentId] = useState('')
   const [name,      setName]      = useState('')
   const [classVal,  setClassVal]  = useState('')
   const [section,   setSection]   = useState('')
   const [rollNo,    setRollNo]    = useState('')
-
-  // ── Webcam state ─────────────────────────────────────────────────────────────
-  const [tab,     setTab]    = useState('webcam')
-  const [active,  setActive] = useState(false)   // true = camera is live
-  const [blobs,   setBlobs]  = useState([])
-  const [upFiles, setUpFiles]= useState([])
-
-  const videoRef  = useRef(null)
-  const canvasRef = useRef(null)
-  // The actual MediaStream lives in a ref so stopCam never has a stale closure
-  const streamRef = useRef(null)
-
-  // ── Data ─────────────────────────────────────────────────────────────────────
+  const [tab,       setTab]       = useState('webcam')
+  const [active,    setActive]    = useState(false)
+  const [blobs,     setBlobs]     = useState([])
+  const [upFiles,   setUpFiles]   = useState([])
   const [classList,   setClassList]   = useState([])
   const [studentList, setStudentList] = useState([])
   const [search,      setSearch]      = useState('')
 
-  const { addToQueue } = useEnrollQueue()
+  const videoRef  = useRef(null)
+  const canvasRef = useRef(null)
+  const streamRef = useRef(null)   // real MediaStream — stopCam never stale
+
+  const { addToQueue, queue } = useEnrollQueue()
   const toast = useToast()
 
+  // Initial load
   useEffect(() => {
     classesApi.list().then(r => r?.ok && setClassList(r.data))
     studentsApi.list().then(r => r?.ok && setStudentList(r.data))
   }, [])
 
-  // ── Camera helpers ────────────────────────────────────────────────────────────
+  // ── Auto-refresh: when queue shrinks, a student was just enrolled ─────────────
+  const prevQueueLen = useRef(0)
+  useEffect(() => {
+    prevQueueLen.current = 0   // init once
+  }, [])
+  useEffect(() => {
+    if (queue.length < prevQueueLen.current) {
+      studentsApi.list().then(r => { if (r?.ok) setStudentList(r.data) })
+    }
+    prevQueueLen.current = queue.length
+  }, [queue.length])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * stopCam — stable identity (empty deps), reads stream from ref.
-   * Safe to call multiple times; harmless when no stream is running.
-   */
+  // ── Camera helpers ────────────────────────────────────────────────────────────
   const stopCam = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop())
       streamRef.current = null
     }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
+    if (videoRef.current) videoRef.current.srcObject = null
     setActive(false)
-  }, []) // ← deliberately empty: identity never changes
+  }, [])
 
-  // Stop camera only when the component unmounts
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => stopCam(), [])
 
   const startCam = async () => {
-    // If a stream is already running, do nothing
     if (streamRef.current) return
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width:  { ideal: 1280 },
-          height: { ideal: 720  },
-          // No facingMode constraint — desktop cameras often don't report one
-          // and Chrome will silently reject the entire getUserMedia call
-        },
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        // No facingMode: desktop cameras often omit it; Chrome can silently
+        // reject the whole getUserMedia call if the constraint can't be met.
       })
-
       streamRef.current = stream
-
-      // Assign srcObject immediately — don't wait for a re-render
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        // Explicitly call play(); autoPlay alone can be blocked by browser policy
-        videoRef.current.play().catch(() => {
-          // Autoplay policy rejected — user gesture already happened (button click)
-          // so this shouldn't fire, but guard it anyway
-        })
+        videoRef.current.play().catch(() => {})
       }
-
       setActive(true)
     } catch (err) {
-      if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        toast('No camera found. Check your camera connection.', 'error')
-      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        toast('Camera permission denied. Allow camera access in your browser.', 'error')
-      } else if (err.name === 'NotReadableError') {
-        toast('Camera is in use by another application.', 'error')
-      } else {
-        toast('Camera error: ' + err.message, 'error')
-      }
+      const msg =
+        err.name === 'NotFoundError'    ? 'No camera found. Check your connection.' :
+        err.name === 'NotAllowedError'  ? 'Camera permission denied. Allow access in browser.' :
+        err.name === 'NotReadableError' ? 'Camera is in use by another app.' :
+        'Camera error: ' + err.message
+      toast(msg, 'error')
     }
   }
 
-  // Capture a frame
   const capture = useCallback(() => {
-    const video  = videoRef.current
-    const canvas = canvasRef.current
-    if (!streamRef.current || !video || !canvas) return
-    canvas.width  = video.videoWidth  || 640
-    canvas.height = video.videoHeight || 480
-    canvas.getContext('2d').drawImage(video, 0, 0)
-    // Flash effect
-    video.style.outline = '3px solid var(--success)'
+    const v = videoRef.current, c = canvasRef.current
+    if (!streamRef.current || !v || !c) return
+    c.width = v.videoWidth || 640; c.height = v.videoHeight || 480
+    c.getContext('2d').drawImage(v, 0, 0)
+    v.style.outline = '3px solid var(--success)'
     setTimeout(() => { if (videoRef.current) videoRef.current.style.outline = '' }, 220)
-    canvas.toBlob(b => setBlobs(prev => [...prev, b]), 'image/jpeg', 0.92)
+    c.toBlob(b => setBlobs(prev => [...prev, b]), 'image/jpeg', 0.92)
   }, [])
 
-  // Space-bar shortcut
   useEffect(() => {
     const handler = e => {
       if (e.code !== 'Space') return
       const tag = document.activeElement?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (!streamRef.current) return
-      e.preventDefault()
-      capture()
+      e.preventDefault(); capture()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [capture])
 
-  const removeBlob = i => setBlobs(prev => prev.filter((_, idx) => idx !== i))
-
   // ── Form helpers ──────────────────────────────────────────────────────────────
-
   const validate = () => {
     if (!studentId.trim()) { toast('Student ID is required.', 'warning');  return false }
     if (!name.trim())      { toast('Name is required.', 'warning');         return false }
     if (!classVal)         { toast('Class is required.', 'warning');        return false }
     if (!section.trim())   { toast('Section is required.', 'warning');      return false }
-    if (!rollNo || parseInt(rollNo) < 1) {
-      toast('Roll number is required.', 'warning'); return false
-    }
+    if (!rollNo || parseInt(rollNo) < 1) { toast('Roll number is required.', 'warning'); return false }
     return true
   }
-
-  const clearForm = () => {
-    setStudentId(''); setName(''); setSection(''); setRollNo('')
-    // Keep class — useful for enrolling multiple students in the same class
-  }
+  const clearForm = () => { setStudentId(''); setName(''); setSection(''); setRollNo('') }
 
   const handleAddToQueue = () => {
     if (!validate()) return
     if (tab === 'webcam') {
       if (blobs.length < 3) { toast('Capture at least 3 photos first.', 'warning'); return }
       addToQueue(
-        { student_id: studentId.trim(), name: name.trim(), class_name: classVal,
-          section: section.trim(), roll_no: rollNo },
+        { student_id: studentId.trim(), name: name.trim(), class_name: classVal, section: section.trim(), roll_no: rollNo },
         blobs, []
       )
       clearForm(); setBlobs([]); stopCam()
     } else {
       if (upFiles.length === 0) { toast('Upload at least one photo.', 'warning'); return }
       addToQueue(
-        { student_id: studentId.trim(), name: name.trim(), class_name: classVal,
-          section: section.trim(), roll_no: rollNo },
+        { student_id: studentId.trim(), name: name.trim(), class_name: classVal, section: section.trim(), roll_no: rollNo },
         [], upFiles
       )
       clearForm(); setUpFiles([])
     }
     toast('Added to enrollment queue!', 'success', 2500)
-    setTimeout(() => studentsApi.list().then(r => r?.ok && setStudentList(r.data)), 2000)
   }
 
   const handleRemoveStudent = async (sid, sname) => {
@@ -201,15 +166,13 @@ export default function Enroll() {
   })
 
   // ── Render ────────────────────────────────────────────────────────────────────
-
   return (
     <div className="g2" style={{ gap: 20, alignItems: 'start' }}>
 
-      {/* ── Enrollment form ─────────────────────────────────────────────────── */}
+      {/* ── Left: Enrollment form ─────────────────────────────────────────────── */}
       <div className="card">
         <div className="card-title"><span className="card-icon">◊</span> New Student Enrollment</div>
 
-        {/* Student details */}
         <div className="form-row3" style={{ marginBottom: 16 }}>
           <div className="form-group">
             <label className="form-label">Student ID <span className="required">*</span></label>
@@ -243,49 +206,26 @@ export default function Enroll() {
           </div>
         </div>
 
-        {/* Tabs
-            NOTE: the Webcam tab must NOT call stopCam — it only switches the view.
-            Only switching TO Upload should stop the camera. */}
+        {/* Tabs — webcam tab must NOT call stopCam */}
         <div className="tabbar">
           <button
             className={`tabbtn${tab === 'webcam' ? ' active' : ''}`}
             onClick={() => setTab('webcam')}
-          >
-            📹 Webcam Capture
-          </button>
+          >📹 Webcam Capture</button>
           <button
             className={`tabbtn${tab === 'upload' ? ' active' : ''}`}
             onClick={() => { setTab('upload'); stopCam() }}
-          >
-            ↑ Upload Photos
-          </button>
+          >↑ Upload Photos</button>
         </div>
 
-        {/* ── Webcam tab ─────────────────────────────────────────────────────── */}
+        {/* Webcam tab */}
         {tab === 'webcam' && (
           <div className="wc-layout">
             <div className="wc-left">
-
               <div className="viewfinder" id="viewfinder">
-                {/*
-                  The <video> element is always mounted so videoRef is always valid.
-                  srcObject is set directly in startCam (not via state/effect)
-                  to avoid any React rendering timing issues.
-                */}
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  id="wc-video"
-                  // Backup play() call once metadata is ready —
-                  // handles browsers that need an explicit trigger
-                  onLoadedMetadata={() => {
-                    videoRef.current?.play().catch(() => {})
-                  }}
-                />
+                <video ref={videoRef} autoPlay playsInline muted id="wc-video"
+                  onLoadedMetadata={() => videoRef.current?.play().catch(() => {})} />
                 <canvas ref={canvasRef} style={{ display: 'none' }} />
-
                 {!active && (
                   <div className="cam-idle">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -296,7 +236,6 @@ export default function Enroll() {
                     <span>Camera not started</span>
                   </div>
                 )}
-
                 {active && (
                   <>
                     <div className="face-oval-wrap">
@@ -308,77 +247,53 @@ export default function Enroll() {
                 )}
               </div>
 
-              {/* Camera controls */}
               <div className="cam-ctrl">
                 {!active && (
-                  <button className="btn-cam btn-cam-start" onClick={startCam}>
-                    ▶ Start Camera
-                  </button>
+                  <button className="btn-cam btn-cam-start" onClick={startCam}>▶ Start Camera</button>
                 )}
                 {active && (
                   <>
                     <button className="btn-cam btn-cam-capture" onClick={capture}>
-                      ● Capture{' '}
-                      <kbd style={{
-                        background: 'rgba(255,255,255,.15)', borderRadius: 3,
-                        padding: '1px 5px', fontSize: 11,
-                      }}>Space</kbd>
+                      ● Capture <kbd style={{ background: 'rgba(255,255,255,.15)', borderRadius: 3, padding: '1px 5px', fontSize: 11 }}>Space</kbd>
                     </button>
-                    <button className="btn-cam btn-cam-stop" onClick={stopCam}>
-                      ■ Stop
-                    </button>
+                    <button className="btn-cam btn-cam-stop" onClick={stopCam}>■ Stop</button>
                   </>
                 )}
               </div>
 
-              {/* Add to Queue */}
               <div style={{ paddingTop: 12 }}>
                 <button className="btn btn-primary btn-full" onClick={handleAddToQueue}>
                   + Add to Enrollment Queue
                 </button>
               </div>
 
-              {/* Thumbnails */}
               <div style={{ marginTop: 14 }}>
                 <div className="flex-sb" style={{ marginBottom: 8 }}>
-                  <span style={{
-                    fontSize: 12,
-                    color: blobs.length >= 10 ? 'var(--success)' : 'var(--warning)',
-                  }}>
-                    {blobs.length > 0
-                      ? `${blobs.length} photo(s)${blobs.length < 10 ? ' — 10+ recommended' : ' — Good'}`
-                      : ''}
+                  <span style={{ fontSize: 12, color: blobs.length >= 10 ? 'var(--success)' : 'var(--warning)' }}>
+                    {blobs.length > 0 ? `${blobs.length} photo(s)${blobs.length < 10 ? ' — 10+ recommended' : ' — Good'}` : ''}
                   </span>
                   {blobs.length > 0 && (
-                    <button
-                      style={{
-                        background: 'none', border: '1px solid rgba(239,68,68,.3)',
-                        color: 'var(--danger)', borderRadius: 'var(--radius-sm)',
-                        padding: '4px 10px', fontSize: 12, cursor: 'pointer',
-                        fontFamily: "'Sora', sans-serif",
-                      }}
-                      onClick={() => setBlobs([])}
-                    >
-                      Clear All
-                    </button>
+                    <button style={{
+                      background: 'none', border: '1px solid rgba(239,68,68,.3)',
+                      color: 'var(--danger)', borderRadius: 'var(--radius-sm)',
+                      padding: '4px 10px', fontSize: 12, cursor: 'pointer', fontFamily: "'Sora', sans-serif",
+                    }} onClick={() => setBlobs([])}>Clear All</button>
                   )}
                 </div>
                 <div className="thumb-grid">
                   {blobs.length === 0 ? (
                     <span className="no-photos">No photos yet</span>
-                  ) : (
-                    blobs.map((b, i) => (
-                      <div key={i} className="thumb filled">
-                        <img src={URL.createObjectURL(b)} alt="" />
-                        <button className="thumb-rm" onClick={() => removeBlob(i)}>×</button>
-                      </div>
-                    ))
-                  )}
+                  ) : blobs.map((b, i) => (
+                    <div key={i} className="thumb filled">
+                      <img src={URL.createObjectURL(b)} alt="" />
+                      <button className="thumb-rm" onClick={() => setBlobs(prev => prev.filter((_, idx) => idx !== i))}>×</button>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
 
-            {/* Capture guide */}
+            {/* Capture guide — right of webcam panel */}
             <div className="wc-sidebar">
               <div className="guide-box">
                 <div className="guide-title">Capture Guide</div>
@@ -393,7 +308,7 @@ export default function Enroll() {
           </div>
         )}
 
-        {/* ── Upload tab ─────────────────────────────────────────────────────── */}
+        {/* Upload tab */}
         {tab === 'upload' && (
           <div>
             <div
@@ -402,60 +317,38 @@ export default function Enroll() {
               onDragOver={e => e.preventDefault()}
               onDrop={e => {
                 e.preventDefault()
-                const files = Array.from(e.dataTransfer.files)
-                  .filter(f => f.type.startsWith('image/'))
-                setUpFiles(prev => [...prev, ...files])
+                setUpFiles(prev => [...prev, ...Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))])
               }}
             >
-              <input
-                id="file-input" type="file" accept="image/*" multiple
-                style={{ display: 'none' }}
-                onChange={e => setUpFiles(prev => [...prev, ...Array.from(e.target.files)])}
-              />
+              <input id="file-input" type="file" accept="image/*" multiple style={{ display: 'none' }}
+                onChange={e => setUpFiles(prev => [...prev, ...Array.from(e.target.files)])} />
               <div style={{ fontSize: 32, marginBottom: 10 }}>📁</div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-                Drop photos here or click to browse
-              </div>
-              <div style={{ fontSize: 12.5, color: 'var(--text3)' }}>
-                JPEG / PNG · 10+ photos recommended
-              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Drop photos here or click to browse</div>
+              <div style={{ fontSize: 12.5, color: 'var(--text3)' }}>JPEG / PNG · 10+ photos recommended</div>
             </div>
-
             {upFiles.length > 0 && (
               <div style={{ marginTop: 12 }}>
                 <div className="flex-sb" style={{ marginBottom: 8 }}>
-                  <span style={{
-                    fontSize: 12,
-                    color: upFiles.length >= 10 ? 'var(--success)' : 'var(--warning)',
-                  }}>
+                  <span style={{ fontSize: 12, color: upFiles.length >= 10 ? 'var(--success)' : 'var(--warning)' }}>
                     {upFiles.length} photo(s) selected
                   </span>
-                  <button
-                    style={{
-                      background: 'none', border: '1px solid rgba(239,68,68,.3)',
-                      color: 'var(--danger)', borderRadius: 'var(--radius-sm)',
-                      padding: '4px 10px', fontSize: 12, cursor: 'pointer',
-                      fontFamily: "'Sora', sans-serif",
-                    }}
-                    onClick={() => setUpFiles([])}
-                  >
-                    Clear
-                  </button>
+                  <button style={{
+                    background: 'none', border: '1px solid rgba(239,68,68,.3)',
+                    color: 'var(--danger)', borderRadius: 'var(--radius-sm)',
+                    padding: '4px 10px', fontSize: 12, cursor: 'pointer', fontFamily: "'Sora', sans-serif",
+                  }} onClick={() => setUpFiles([])}>Clear</button>
                 </div>
                 <div className="thumb-grid">
                   {upFiles.slice(0, 24).map((f, i) => (
                     <div key={i} className="thumb filled">
                       <img src={URL.createObjectURL(f)} alt="" />
-                      <button
-                        className="thumb-rm"
-                        onClick={() => setUpFiles(prev => prev.filter((_, idx) => idx !== i))}
-                      >×</button>
+                      <button className="thumb-rm"
+                        onClick={() => setUpFiles(prev => prev.filter((_, idx) => idx !== i))}>×</button>
                     </div>
                   ))}
                 </div>
               </div>
             )}
-
             <div style={{ paddingTop: 16 }}>
               <button className="btn btn-primary btn-full" onClick={handleAddToQueue}>
                 + Add to Enrollment Queue
@@ -465,36 +358,24 @@ export default function Enroll() {
         )}
       </div>
 
-      {/* ── Enrolled students ────────────────────────────────────────────────── */}
-      <div className="card">
-        <div className="card-title flex-sb">
-          <span>
-            <span className="card-icon">👥</span> Enrolled Students ({studentList.length})
-          </span>
-          <input
-            className="form-input"
-            style={{ maxWidth: 180, padding: '6px 10px', fontSize: 12.5 }}
-            placeholder="Search..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-        <div className="table-wrap" style={{ maxHeight: 500, overflowY: 'auto' }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th><th>Class</th><th>Roll</th><th>Enrolled</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="empty" style={{ padding: 32 }}>
-                    No students enrolled yet.
-                  </td>
-                </tr>
-              ) : (
-                filtered.map(s => (
+      {/* ── Right column: Enrolled students + queue anchored here ────────────── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div className="card">
+          <div className="card-title flex-sb">
+            <span><span className="card-icon">👥</span> Enrolled Students ({studentList.length})</span>
+            <input className="form-input"
+              style={{ maxWidth: 180, padding: '6px 10px', fontSize: 12.5 }}
+              placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+          <div className="table-wrap" style={{ maxHeight: 460, overflowY: 'auto' }}>
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Class</th><th>Roll</th><th>Enrolled</th><th></th></tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr><td colSpan={5} className="empty" style={{ padding: 32 }}>No students enrolled yet.</td></tr>
+                ) : filtered.map(s => (
                   <tr key={s.student_id}>
                     <td>
                       <div className="flex">
@@ -503,10 +384,7 @@ export default function Enroll() {
                         </div>
                         <div>
                           <div className="td-name">{s.name}</div>
-                          <div style={{
-                            fontSize: 11.5, color: 'var(--text3)',
-                            fontFamily: 'Space Mono, monospace',
-                          }}>
+                          <div style={{ fontSize: 11.5, color: 'var(--text3)', fontFamily: 'Space Mono, monospace' }}>
                             {s.student_id}
                           </div>
                         </div>
@@ -514,22 +392,16 @@ export default function Enroll() {
                     </td>
                     <td><span className="badge badge-blue">{s.class_name}</span></td>
                     <td className="mono">{s.roll_no}</td>
-                    <td style={{ fontSize: 12, color: 'var(--text3)' }}>
-                      {(s.enrolled_at || '').slice(0, 10)}
-                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--text3)' }}>{(s.enrolled_at || '').slice(0, 10)}</td>
                     <td>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleRemoveStudent(s.student_id, s.name)}
-                      >
-                        Remove
-                      </button>
+                      <button className="btn btn-danger btn-sm"
+                        onClick={() => handleRemoveStudent(s.student_id, s.name)}>Remove</button>
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

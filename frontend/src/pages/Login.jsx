@@ -12,7 +12,6 @@ export default function Login({ onLogin }) {
     e.preventDefault()
     setError('')
     setLoading(true)
-
     try {
       const res = await fetch('/login', {
         method: 'POST',
@@ -20,9 +19,7 @@ export default function Login({ onLogin }) {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ username, password }),
       })
-
       const data = await res.json().catch(() => ({}))
-
       if (data.ok) {
         onLogin?.()
         navigate('/', { replace: true })
@@ -37,44 +34,63 @@ export default function Login({ onLogin }) {
   }
 
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <div className="login-logo">
-          <div className="login-logo-icon">👁</div>
-          <div>
-            <div className="login-brand">Face<span>Track</span></div>
-            <div className="login-sub">AI Attendance Management</div>
+    <>
+      {/* Aurora runs here too — same blobs as the main app */}
+      <div className="aurora" aria-hidden="true">
+        <div className="aurora-orb aurora-blue" />
+        <div className="aurora-orb aurora-orange" />
+        <div className="aurora-orb aurora-green" />
+      </div>
+
+      <div className="login-wrap" style={{ position: 'relative', zIndex: 1 }}>
+        <div className="login-card">
+
+          {/* Logo + brand */}
+          <div className="login-logo">
+            <div className="login-logo-icon">👁</div>
+            <div>
+              <div className="login-brand">Face<span>Track</span> <span style={{ color: 'var(--text3)', fontSize: 13, fontWeight: 500 }}>AI</span></div>
+              <div className="login-sub">Narula Public School Attendance System</div>
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div style={{
+            height: 1,
+            background: 'linear-gradient(90deg, transparent, var(--border2), transparent)',
+            marginBottom: 28,
+          }} />
+
+          {error && <div className="login-err" style={{ marginBottom: 20 }}>{error}</div>}
+
+          <form className="login-form" onSubmit={handleSubmit}>
+            <div className="login-field">
+              <label htmlFor="username">Username</label>
+              <input id="username" type="text" className="form-input"
+                placeholder="Enter your username"
+                value={username} onChange={e => setUsername(e.target.value)}
+                autoComplete="username" required autoFocus />
+            </div>
+            <div className="login-field">
+              <label htmlFor="password">Password</label>
+              <input id="password" type="password" className="form-input"
+                placeholder="Enter your password"
+                value={password} onChange={e => setPassword(e.target.value)}
+                autoComplete="current-password" required />
+            </div>
+            <button type="submit" className="login-btn" disabled={loading}>
+              {loading
+                ? <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><span className="spin" style={{ borderTopColor: '#fff' }} /> Signing in...</span>
+                : 'Sign In →'
+              }
+            </button>
+          </form>
+
+          <div className="login-footer">
+            Enrich · Empower · Enlighten — Mogra
           </div>
         </div>
-
-        {error && <div className="login-err" style={{ marginBottom: 16 }}>{error}</div>}
-
-        <form className="login-form" onSubmit={handleSubmit}>
-          <div className="login-field">
-            <label htmlFor="username">Username</label>
-            <input
-              id="username" type="text" className="form-input"
-              placeholder="Enter username"
-              value={username} onChange={e => setUsername(e.target.value)}
-              autoComplete="username" required autoFocus
-            />
-          </div>
-          <div className="login-field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password" type="password" className="form-input"
-              placeholder="Enter password"
-              value={password} onChange={e => setPassword(e.target.value)}
-              autoComplete="current-password" required
-            />
-          </div>
-          <button type="submit" className="login-btn" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign In →'}
-          </button>
-        </form>
-
-        <div className="login-footer">FaceTrack AI — School Attendance System</div>
       </div>
-    </div>
+    </>
   )
 }
