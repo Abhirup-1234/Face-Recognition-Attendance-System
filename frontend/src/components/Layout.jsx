@@ -57,16 +57,16 @@ export default function Layout({ children, enrolledCount = 0 }) {
   return (
     <div className="app-shell">
 
-      {/* ── Aurora background — NPS blue · orange · green ── */}
+      {/* ── Aurora background — blobs travel slowly across the full screen */}
       <div className="aurora" aria-hidden="true">
         <div className="aurora-orb aurora-blue" />
         <div className="aurora-orb aurora-orange" />
         <div className="aurora-orb aurora-green" />
+        <div className="aurora-orb aurora-purple" />
       </div>
 
-      {/* ── Sidebar ──────────────────────────────────────── */}
+      {/* ── Sidebar */}
       <nav className={`sidebar${sidebarOpen ? ' open' : ''}`}>
-
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">👁</div>
           <div className="sidebar-logo-text">Face<span>Track</span></div>
@@ -76,8 +76,7 @@ export default function Layout({ children, enrolledCount = 0 }) {
           const items = NAV.filter(n => n.section === section)
           return (
             <div key={section}>
-              <div className="sidebar-label"
-                style={{ marginTop: section !== 'Main' ? 16 : 0 }}>
+              <div className="sidebar-label" style={{ marginTop: section !== 'Main' ? 16 : 0 }}>
                 {section}
               </div>
               {items.map(item => (
@@ -96,7 +95,6 @@ export default function Layout({ children, enrolledCount = 0 }) {
 
         <div className="sidebar-spacer" />
 
-        {/* Status */}
         <div className="sidebar-status">
           <div className="flex" style={{ marginBottom: 6 }}>
             <span className={`sdot ${connected ? 'green' : 'yellow'}`} />
@@ -107,7 +105,6 @@ export default function Layout({ children, enrolledCount = 0 }) {
           </div>
         </div>
 
-        {/* Logout */}
         <button onClick={handleLogout} style={{
           display: 'flex', alignItems: 'center', gap: 9,
           padding: '9px 12px', borderRadius: 'var(--radius-sm)',
@@ -131,7 +128,6 @@ export default function Layout({ children, enrolledCount = 0 }) {
           ⇒ Logout
         </button>
 
-        {/* Credits */}
         <div className="sidebar-credits">
           <div className="credits-school">
             <img src={NPS_LOGO} alt="NPS" className="credits-logo" />
@@ -145,7 +141,7 @@ export default function Layout({ children, enrolledCount = 0 }) {
 
       <div className={`sb-overlay${sidebarOpen ? ' active' : ''}`} onClick={closeOverlay} />
 
-      {/* ── Main content ─────────────────────────────────── */}
+      {/* ── Main content */}
       <div className="main-area">
         <header className="header">
           <button className="hburger" onClick={() => setSidebarOpen(o => !o)}>☰</button>

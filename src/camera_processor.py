@@ -1,7 +1,7 @@
 """
 Per-camera background thread.
-Reads frames -> preprocesses -> detects faces -> identifies -> marks attendance.
-Caches last detections for smooth bounding box display on skipped frames.
+Reads frames → encodes for streaming always.
+Face detection + identification only when recognition_enabled = True.
 """
 import time
 import logging
@@ -24,26 +24,30 @@ class CameraProcessor(threading.Thread):
 
     def __init__(self, camera_id: str, source, socketio=None):
         super().__init__(daemon=True, name=f"cam-{camera_id}")
-        self.camera_id   = camera_id
-        self.source      = source
-        self.socketio    = socketio
+        self.camera_id  = camera_id
+        self.source     = source
+        self.socketio   = socketio
 
-        self._engine     = FaceEngine()
-        self._stop_evt   = threading.Event()
-        self._frame_lock = threading.Lock()
+        self._engine      = FaceEngine()
+        self._stop_evt    = threading.Event()
+        self._frame_lock  = threading.Lock()
         self._latest_jpg: bytes = b""
 
-        # Debounce buffers
+        # Recognition gate — OFF by default to protect system on startup
+        self._recognition_lock    = threading.Lock()
+        self._recognition_enabled = False
+
         self._confirm_buf: dict = defaultdict(list)
-        self._last_marked: dict = {}   # student_id -> timestamp
-        self._last_faces:  list = []   # cached for skipped frames
+        self._last_marked: dict = {}
+        self._last_faces:  list = []
 
         self.stats = {
-            "capture_fps":         0.0,   # camera's native read rate
-            "stream_fps":          config.STREAM_FPS,  # browser stream rate (from config)
-            "faces_detected":      0,
-            "recognitions_today":  0,
-            "status":              "stopped",
+            "capture_fps":        0.0,
+            "stream_fps":         config.STREAM_FPS,
+            "faces_detected":     0,
+            "recognitions_today": 0,
+            "status":             "stopped",
+            "recognition_enabled": False,
         }
 
     def stop(self):
@@ -53,98 +57,77 @@ class CameraProcessor(threading.Thread):
         with self._frame_lock:
             return self._latest_jpg
 
-    def run(self):
-        log.info("[%s] Starting ...", self.camera_id)
+    def set_recognition(self, enabled: bool):
+        with self._recognition_lock:
+            self._recognition_enabled = enabled
+            self.stats["recognition_enabled"] = enabled
+        if not enabled:
+            self._confirm_buf.clear()
+            self._last_faces = []
+        log.info("[%s] Recognition %s", self.camera_id, "ON" if enabled else "OFF")
 
-        # Check if source is an image folder
+    @property
+    def recognition_enabled(self) -> bool:
+        with self._recognition_lock:
+            return self._recognition_enabled
+
+    def run(self):
         if isinstance(self.source, str) and Path(self.source).is_dir():
             self._run_folder()
         else:
             self._run_capture()
 
+    # ── Folder / image slideshow mode ──────────────────────────────────────────
     def _run_folder(self):
-        """Slideshow mode: load images from a folder, loop forever."""
         EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
         folder = Path(self.source)
-
-        images = sorted([
-            p for p in folder.iterdir()
-            if p.suffix.lower() in EXTS
-        ])
-
+        images = sorted([p for p in folder.iterdir() if p.suffix.lower() in EXTS])
         if not images:
-            log.error("[%s] No images found in folder: %s", self.camera_id, self.source)
-            self.stats["status"] = "error"
-            return
-
-        log.info("[%s] Image folder mode: %d images, %.1fs each",
-                 self.camera_id, len(images), config.IMAGE_FOLDER_DELAY)
+            self.stats["status"] = "error"; return
 
         self.stats["status"] = "running"
         self.stats["capture_fps"] = round(1.0 / max(0.1, config.IMAGE_FOLDER_DELAY), 1)
-
         idx = 0
-        while not self._stop_evt.is_set():
-            img_path = images[idx % len(images)]
-            idx += 1
 
+        while not self._stop_evt.is_set():
+            img_path = images[idx % len(images)]; idx += 1
             try:
                 frame = cv2.imread(str(img_path))
-            except Exception as e:
-                log.warning("[%s] Error reading image %s: %s", self.camera_id, img_path.name, e)
+            except Exception:
                 continue
             if frame is None:
-                log.warning("[%s] Could not read image: %s", self.camera_id, img_path.name)
                 continue
 
-            # Overlay filename at top-left so you know which image is shown
-            label = img_path.name
-            cv2.putText(frame, label, (10, 28),
+            cv2.putText(frame, img_path.name, (10, 28),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
-            # Run detection + identification
-            try:
-                faces = self._engine.detect(frame)
-                self.stats["faces_detected"] = len(faces)
+            if self.recognition_enabled:
+                try:
+                    faces = self._engine.detect(frame)
+                    identified = self._identify_and_mark(faces)
+                    self._last_faces = identified
+                    self.stats["faces_detected"] = len(identified)
+                    ann = FaceEngine.draw_results(frame, identified)
+                    self._encode(ann)
+                except Exception as e:
+                    log.warning("[%s] Detection error: %s", self.camera_id, e)
+                    self._encode(frame)
+            else:
+                self._last_faces = []
+                self.stats["faces_detected"] = 0
+                self._encode(frame)
 
-                identified: list = []
-                for face in faces:
-                    sid, sim = self._engine.identify(face)
-                    face.student_id   = sid
-                    face.student_name = (
-                        self._engine._student_names.get(sid) if sid else None
-                    )
-                    face.similarity   = sim
-    
-                    if sid and self._should_mark(sid, sim):
-                        self._mark(face)
-                        self.stats["recognitions_today"] += 1
-
-                    identified.append(face)
-
-                self._last_faces = identified
-                ann = FaceEngine.draw_results(frame, identified)
-                self._encode(ann)
-            except Exception as e:
-                log.warning("[%s] Detection error on %s: %s — skipping",
-                            self.camera_id, img_path.name, e)
-                self._encode(frame)  # show raw frame even if detection fails
-
-            # Hold this image for IMAGE_FOLDER_DELAY seconds
-            # Sleep in small intervals so stop() is responsive
             deadline = time.time() + config.IMAGE_FOLDER_DELAY
             while time.time() < deadline and not self._stop_evt.is_set():
                 time.sleep(0.05)
 
         self.stats["status"] = "stopped"
-        log.info("[%s] Folder feed stopped.", self.camera_id)
 
+    # ── Live camera mode ────────────────────────────────────────────────────────
     def _run_capture(self):
-        """Normal mode: live camera or video file."""
         cap = self._open_capture()
         if cap is None:
-            self.stats["status"] = "error"
-            return
+            self.stats["status"] = "error"; return
 
         self.stats["status"] = "running"
         frame_count = 0
@@ -154,13 +137,11 @@ class CameraProcessor(threading.Thread):
         while not self._stop_evt.is_set():
             ret, frame = cap.read()
             if not ret:
-                log.warning("[%s] Frame read failed - reconnecting ...", self.camera_id)
-                cap.release()
-                time.sleep(2)
+                log.warning("[%s] Frame read failed — reconnecting", self.camera_id)
+                cap.release(); time.sleep(2)
                 cap = self._open_capture()
                 if cap is None:
-                    self.stats["status"] = "error"
-                    break
+                    self.stats["status"] = "error"; break
                 continue
 
             frame_count += 1
@@ -168,44 +149,42 @@ class CameraProcessor(threading.Thread):
             now = time.time()
             if now - fps_ts >= 3.0:
                 self.stats["capture_fps"] = round(fps_count / (now - fps_ts), 1)
-                fps_count = 0
-                fps_ts    = now
+                fps_count = 0; fps_ts = now
 
-            # On skipped frames, redraw last known boxes for smooth display
-            if frame_count % config.PROCESS_EVERY_N != 0:
-                if self._last_faces:
-                    ann = FaceEngine.draw_results(frame, self._last_faces)
-                    self._encode(ann)
-                else:
-                    self._encode(frame)
+            # Always stream — recognition gate determines whether we detect
+            if not self.recognition_enabled:
+                self._last_faces = []
+                self.stats["faces_detected"] = 0
+                self._encode(frame)
                 continue
 
-            # -- Detection + identification --
+            # On skipped frames redraw last known boxes
+            if frame_count % config.PROCESS_EVERY_N != 0:
+                ann = FaceEngine.draw_results(frame, self._last_faces) if self._last_faces else frame
+                self._encode(ann)
+                continue
+
             faces = self._engine.detect(frame)
-            self.stats["faces_detected"] = len(faces)
-
-            identified: list = []
-            for face in faces:
-                sid, sim = self._engine.identify(face)
-                face.student_id   = sid
-                face.student_name = (
-                    self._engine._student_names.get(sid) if sid else None
-                )
-                face.similarity   = sim
-
-                if sid and self._should_mark(sid, sim):
-                    self._mark(face)
-                    self.stats["recognitions_today"] += 1
-
-                identified.append(face)
-
+            identified = self._identify_and_mark(faces)
             self._last_faces = identified
-            ann = FaceEngine.draw_results(frame, identified)
-            self._encode(ann)
+            self.stats["faces_detected"] = len(identified)
+            self._encode(FaceEngine.draw_results(frame, identified))
 
         cap.release()
         self.stats["status"] = "stopped"
-        log.info("[%s] Stopped.", self.camera_id)
+
+    def _identify_and_mark(self, faces):
+        identified = []
+        for face in faces:
+            sid, sim = self._engine.identify(face)
+            face.student_id   = sid
+            face.student_name = self._engine._student_names.get(sid) if sid else None
+            face.similarity   = sim
+            if sid and self._should_mark(sid, sim):
+                self._mark(face)
+                self.stats["recognitions_today"] += 1
+            identified.append(face)
+        return identified
 
     def _open_capture(self):
         for attempt in range(5):
@@ -215,8 +194,7 @@ class CameraProcessor(threading.Thread):
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 return cap
-            log.warning("[%s] Cannot open source (attempt %d/5)",
-                        self.camera_id, attempt + 1)
+            log.warning("[%s] Cannot open (attempt %d/5)", self.camera_id, attempt + 1)
             time.sleep(3)
         log.error("[%s] Failed to open camera.", self.camera_id)
         return None
@@ -230,35 +208,19 @@ class CameraProcessor(threading.Thread):
     def _should_mark(self, student_id: str, sim: float) -> bool:
         buf = self._confirm_buf[student_id]
         buf.append(True)
-        if len(buf) > config.CONFIRM_FRAMES:
-            buf.pop(0)
-        if len(buf) < config.CONFIRM_FRAMES or not all(buf):
-            return False
-        # Fast in-memory check: already marked today on any camera?
-        if self._last_marked.get(student_id):
-            return False
-        # DB check: marked today on any camera (cross-camera dedup)
+        if len(buf) > config.CONFIRM_FRAMES: buf.pop(0)
+        if len(buf) < config.CONFIRM_FRAMES or not all(buf): return False
+        if self._last_marked.get(student_id): return False
         if db.was_marked_today(student_id):
-            self._last_marked[student_id] = True
-            return False
+            self._last_marked[student_id] = True; return False
         return True
 
     def _mark(self, face: FaceResult):
-        ok = db.mark_attendance(
-            student_id=face.student_id,
-            camera_id=self.camera_id,
-            confidence=face.similarity,   # store raw cosine similarity (0-1)
-        )
-        if not ok:
-            return
-
+        ok = db.mark_attendance(face.student_id, self.camera_id, face.similarity)
+        if not ok: return
         self._last_marked[face.student_id] = True
         self._confirm_buf[face.student_id] = []
-
-        log.info("[%s] Marked: %s (%s) | similarity=%.3f",
-                 self.camera_id, face.student_name,
-                 face.student_id, face.similarity)
-
+        log.info("[%s] Marked: %s | sim=%.3f", self.camera_id, face.student_name, face.similarity)
         if self.socketio:
             self.socketio.emit("attendance_marked", {
                 "camera_id":    self.camera_id,
@@ -288,8 +250,7 @@ class CameraManager:
     def stop_camera(self, camera_id: str):
         proc = self._procs.pop(camera_id, None)
         if proc:
-            proc.stop()
-            proc.join(timeout=5)
+            proc.stop(); proc.join(timeout=5)
 
     def stop_all(self):
         for cam_id in list(self._procs):
@@ -299,20 +260,23 @@ class CameraManager:
         proc = self._procs.get(camera_id)
         return proc.get_jpeg() if proc else b""
 
+    def set_recognition(self, camera_id: str, enabled: bool) -> bool:
+        proc = self._procs.get(camera_id)
+        if proc:
+            proc.set_recognition(enabled)
+            return True
+        return False
+
     def get_stats(self) -> dict:
-        import config as _cfg
         stats = {}
-        # Include all configured cameras, even stopped ones
-        for cam_id in _cfg.CAMERAS:
+        for cam_id in config.CAMERAS:
             if cam_id in self._procs:
                 stats[cam_id] = self._procs[cam_id].stats
             else:
                 stats[cam_id] = {
-                    "capture_fps": 0.0,
-                    "stream_fps":  _cfg.STREAM_FPS,
-                    "faces_detected": 0,
-                    "recognitions_today": 0,
-                    "status": "stopped",
+                    "capture_fps": 0.0, "stream_fps": config.STREAM_FPS,
+                    "faces_detected": 0, "recognitions_today": 0,
+                    "status": "stopped", "recognition_enabled": False,
                 }
         return stats
 
