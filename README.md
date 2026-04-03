@@ -154,17 +154,15 @@ FaceTrackAI/
 │   ├── conftest.py           # Fixtures
 │   ├── test_database.py      # DB CRUD tests
 │   ├── test_api.py           # API endpoint tests
-│   └── test_face_engine.py   # Embedding store + normalisation tests
+│   ├── test_face_engine.py   # Embedding store + normalisation tests
+│   └── test_camera.py        # Camera backend diagnostics
 │
-├── data/                     # Runtime data (auto-created)
-│   ├── attendance.db         # SQLite database
-│   ├── embeddings/           # .npy files per student
-│   ├── student_photos/       # Raw enrollment images
-│   ├── logs/                 # Application logs
-│   └── reports/              # Generated PDF/Excel reports
-│
-└── scripts/
-    └── test_camera.py        # Camera backend diagnostics
+└── data/                     # Runtime data (auto-created)
+    ├── attendance.db         # SQLite database
+    ├── embeddings/           # .npy files per student
+    ├── student_photos/       # Raw enrollment images
+    ├── logs/                 # Application logs
+    └── reports/              # Generated PDF/Excel reports
 ```
 
 ---
