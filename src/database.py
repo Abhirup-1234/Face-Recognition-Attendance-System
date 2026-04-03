@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import Optional, List, Dict
 
 import config
+from utils import CLASS_ORDER
 
 log = logging.getLogger(__name__)
 _local = threading.local()
@@ -34,6 +35,16 @@ def get_db():
         yield conn; conn.commit()
     except Exception:
         conn.rollback(); raise
+
+
+def close_db():
+    """Close the thread-local connection (for graceful shutdown)."""
+    if hasattr(_local, "conn") and _local.conn is not None:
+        try:
+            _local.conn.close()
+        except Exception:
+            pass
+        _local.conn = None
 
 
 def init_db():
@@ -78,10 +89,41 @@ def init_db():
                 UNIQUE(class_name, stream, section)
             );
 
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                action     TEXT NOT NULL,
+                details    TEXT DEFAULT '',
+                username   TEXT DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_att_student_date ON attendance(student_id, date);
             CREATE INDEX IF NOT EXISTS idx_att_date         ON attendance(date);
+            CREATE INDEX IF NOT EXISTS idx_audit_ts         ON audit_log(timestamp);
         """)
     log.info("Database ready at %s", config.DB_PATH)
+
+
+# ── Audit logging ──────────────────────────────────────────────────────────────
+
+def log_audit(action: str, details: str = "", username: str = ""):
+    """Record a destructive or significant action for audit trail."""
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (action, details, username) VALUES (?,?,?)",
+                (action, details, username)
+            )
+    except Exception as e:
+        log.warning("Failed to write audit log: %s", e)
+
+
+def get_audit_log(limit: int = 100) -> List[Dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── Class sections ─────────────────────────────────────────────────────────────
@@ -137,12 +179,6 @@ def list_classes() -> List[str]:
     sourced from the class_sections table plus any students already enrolled.
     Ordered by the canonical school sequence.
     """
-    _ORDER = {
-        "Nursery": 0, "LKG": 1, "UKG": 2,
-        "I": 3, "II": 4, "III": 5, "IV": 6, "V": 7,
-        "VI": 8, "VII": 9, "VIII": 10, "IX": 11, "X": 12,
-        "XI": 13, "XII": 14,
-    }
     with get_db() as conn:
         from_sections = {
             r[0] for r in conn.execute(
@@ -155,7 +191,20 @@ def list_classes() -> List[str]:
             ).fetchall()
         }
     all_classes = from_sections | from_students
-    return sorted(all_classes, key=lambda c: (_ORDER.get(c, 99), c))
+    return sorted(all_classes, key=lambda c: (CLASS_ORDER.get(c, 99), c))
+
+
+def delete_class_sections(class_name: str) -> bool:
+    """Remove all sections for a class from the DB (students are NOT deleted)."""
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "DELETE FROM class_sections WHERE class_name=?", (class_name,)
+            )
+        return True
+    except Exception as e:
+        log.error("delete_class_sections: %s", e)
+        return False
 
 
 # ── Students ───────────────────────────────────────────────────────────────────
@@ -282,6 +331,40 @@ def get_attendance_by_date(target_date: str, class_name: str = None,
             params
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def clear_attendance_by_date(target_date: str) -> bool:
+    """Delete all attendance records for a specific date."""
+    try:
+        with get_db() as conn:
+            conn.execute("DELETE FROM attendance WHERE date=?", (target_date,))
+        return True
+    except Exception as e:
+        log.error("clear_attendance_by_date: %s", e)
+        return False
+
+
+def clear_all_attendance() -> bool:
+    """Delete ALL attendance records."""
+    try:
+        with get_db() as conn:
+            conn.execute("DELETE FROM attendance")
+        return True
+    except Exception as e:
+        log.error("clear_all_attendance: %s", e)
+        return False
+
+
+def reset_all_data() -> bool:
+    """Clear all attendance and deactivate all students."""
+    try:
+        with get_db() as conn:
+            conn.execute("DELETE FROM attendance")
+            conn.execute("UPDATE students SET is_active=0")
+        return True
+    except Exception as e:
+        log.error("reset_all_data: %s", e)
+        return False
 
 
 def get_daily_stats(target_date: str) -> Dict:

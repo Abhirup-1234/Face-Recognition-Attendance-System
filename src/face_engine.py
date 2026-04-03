@@ -160,6 +160,10 @@ class FaceEngine:
         if p.exists():
             p.unlink()
 
+    def get_student_name(self, student_id: str) -> Optional[str]:
+        """Public accessor for student names — avoids private member access."""
+        return self._student_names.get(student_id)
+
     # ── Frame normalisation ─────────────────────────────────────────────────────
 
     @staticmethod

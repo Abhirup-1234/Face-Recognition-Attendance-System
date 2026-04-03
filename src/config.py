@@ -5,6 +5,7 @@ They are no longer stored in settings.json.
 """
 import os
 import json
+import secrets
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
@@ -29,8 +30,27 @@ for _d in [DATA_DIR, EMBEDDINGS_DIR, STUDENT_IMG_DIR, LOG_DIR, REPORT_DIR]:
 # ── Load .env ──────────────────────────────────────────────────────────────────
 load_dotenv(BASE_DIR / ".env")
 
+
+def _ensure_secret_key() -> str:
+    """Generate a strong SECRET_KEY and persist it to .env if missing."""
+    key = os.getenv("SECRET_KEY", "").strip()
+    if key and key != "key":
+        return key
+    key = secrets.token_hex(32)
+    env_path = BASE_DIR / ".env"
+    text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    if "SECRET_KEY=" in text:
+        import re
+        text = re.sub(r"^SECRET_KEY=.*$", f"SECRET_KEY={key}", text, flags=re.MULTILINE)
+    else:
+        text += f"\nSECRET_KEY={key}\n"
+    env_path.write_text(text, encoding="utf-8")
+    os.environ["SECRET_KEY"] = key
+    return key
+
+
 # ── Secrets ────────────────────────────────────────────────────────────────────
-SECRET_KEY     = os.getenv("SECRET_KEY",     "facetrack-dev-key-change-in-production")
+SECRET_KEY     = _ensure_secret_key()
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 _SECRETS = {"SECRET_KEY", "ADMIN_USERNAME", "ADMIN_PASSWORD"}
@@ -40,6 +60,16 @@ DEBUG      = False
 HOST       = "0.0.0.0"
 PORT       = 5000
 ASYNC_MODE = "threading"
+
+# ── CORS / Security ───────────────────────────────────────────────────────────
+# For a local school server, allow localhost and LAN origins
+CORS_ORIGINS = [
+    f"http://127.0.0.1:{PORT}",
+    f"http://localhost:{PORT}",
+]
+
+# Rate limiting
+RATE_LIMIT_LOGIN = "5/minute"
 
 # ── Cameras ────────────────────────────────────────────────────────────────────
 CAMERAS = {"CAM-101": 1}

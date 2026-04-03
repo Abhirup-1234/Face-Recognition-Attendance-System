@@ -25,5 +25,12 @@ reportlab>=4.1.0
 openpyxl>=3.1.2
 pandas>=2.2.0
 
+# Rate limiting
+flask-limiter>=3.5.0
+
 # Utilities
 Werkzeug>=3.0.1
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0

@@ -1,19 +1,28 @@
 """
 FaceTrack AI — Flask application factory + all routes.
 """
-import sys, logging, socket, threading, webbrowser, re
+import sys
+import logging
+import socket
+import threading
+import webbrowser
+import re
+import shutil
+import base64
 from datetime import date
 from functools import wraps
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, session, send_from_directory
 from flask_socketio import SocketIO, emit
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
 import database as db
 from camera_processor import CameraManager
 from face_engine import FaceEngine
 from report_generator import generate_pdf_report, generate_excel_report
+from utils import sort_classes
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _fmt = logging.Formatter("%(asctime)s [%(levelname)-8s] %(name)s: %(message)s")
@@ -31,24 +40,43 @@ class _WFilter(logging.Filter):
     def filter(self, r): return "write() before start_response" not in r.getMessage()
 logging.getLogger("werkzeug").addFilter(_WFilter())
 
-socketio = SocketIO(async_mode="threading", cors_allowed_origins="*",
+socketio = SocketIO(async_mode="threading", cors_allowed_origins=config.CORS_ORIGINS,
                     logger=False, engineio_logger=False)
 
-camera_manager: CameraManager = None
-engine: FaceEngine = None
+camera_manager: CameraManager = None   # type: ignore[assignment]
+engine: FaceEngine = None               # type: ignore[assignment]
 
-# ── Class sort order ──────────────────────────────────────────────────────────
-_CLASS_ORDER = {
-    "Nursery": 0, "LKG": 1, "UKG": 2,
-    "I": 3, "II": 4, "III": 5, "IV": 6, "V": 7,
-    "VI": 8, "VII": 9, "VIII": 10, "IX": 11, "X": 12,
-    "XI": 13, "XII": 14,
-}
+# ── Password hashing helpers ──────────────────────────────────────────────────
+# Passwords in .env may be plaintext (legacy) or hashed (pbkdf2:sha256:...)
+# We auto-detect and upgrade on first successful login.
 
-def sort_classes(classes):
-    def key(c):
-        return (_CLASS_ORDER.get(c, 99), c)
-    return sorted(classes, key=key)
+def _is_hashed(pw: str) -> bool:
+    return pw.startswith("pbkdf2:") or pw.startswith("scrypt:")
+
+
+def _check_admin_password(password: str) -> bool:
+    stored = config.ADMIN_PASSWORD
+    if _is_hashed(stored):
+        return check_password_hash(stored, password)
+    # Legacy plaintext — check directly
+    return password == stored
+
+
+def _hash_and_upgrade_password(password: str):
+    """Hash the admin password and persist it to .env on first login."""
+    if _is_hashed(config.ADMIN_PASSWORD):
+        return  # Already hashed
+    hashed = generate_password_hash(password)
+    env_path = config.BASE_DIR / ".env"
+    text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    if "ADMIN_PASSWORD=" in text:
+        text = re.sub(r"^ADMIN_PASSWORD=.*$", f"ADMIN_PASSWORD={hashed}",
+                      text, flags=re.MULTILINE)
+    else:
+        text += f"\nADMIN_PASSWORD={hashed}\n"
+    env_path.write_text(text, encoding="utf-8")
+    config.ADMIN_PASSWORD = hashed
+    log.info("Admin password has been hashed and persisted.")
 
 
 def get_local_ip() -> str:
@@ -63,8 +91,23 @@ def get_local_ip() -> str:
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = config.SECRET_KEY
+
+    # Rate limiting
+    try:
+        from flask_limiter import Limiter
+        from flask_limiter.util import get_remote_address
+        limiter = Limiter(
+            get_remote_address,
+            app=app,
+            default_limits=[],
+            storage_uri="memory://",
+        )
+    except ImportError:
+        limiter = None
+        log.warning("flask-limiter not installed — login rate limiting disabled.")
+
     socketio.init_app(app)
-    _register_routes(app)
+    _register_routes(app, limiter)
     return app
 
 
@@ -77,9 +120,16 @@ def login_required(f):
     return decorated
 
 
+def _get_username() -> str:
+    """Get current session username for audit logging."""
+    return session.get("username", "unknown")
+
+
 def get_enrolled_count() -> int:
-    try:    return len(db.list_students())
-    except: return 0
+    try:
+        return len(db.list_students())
+    except Exception:
+        return 0
 
 
 def startup(app):
@@ -105,7 +155,7 @@ def startup(app):
     lan_url   = f"http://{get_local_ip()}:{config.PORT}"
     print(f"\n{'='*60}\n  FaceTrack AI is READY\n  Local : {local_url}"
           f"\n  LAN   : {lan_url}\n  User  : {config.ADMIN_USERNAME}"
-          f"\n  Pass  : {config.ADMIN_PASSWORD}\n  Ctrl+C to stop\n{'='*60}\n", flush=True)
+          f"\n  Ctrl+C to stop\n{'='*60}\n", flush=True)
 
     threading.Timer(2.0, lambda: webbrowser.open(local_url)).start()
 
@@ -117,7 +167,19 @@ def _serve_spa():
     return send_from_directory(str(dist), "index.html")
 
 
-def _register_routes(app: Flask):
+# ── Blank JPEG for snapshot fallback ──────────────────────────────────────────
+_BLANK_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+    "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAA"
+    "AQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQR"
+    "BRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RF"
+    "RkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ip"
+    "qrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEB"
+    "AAA/APvSiigD/9k="
+)
+
+
+def _register_routes(app: Flask, limiter=None):
 
     # ── Auth ───────────────────────────────────────────────────────────────────
     @app.route("/api/auth/status")
@@ -135,14 +197,28 @@ def _register_routes(app: Flask):
         else:
             username = request.form.get("username","").strip()
             password = request.form.get("password","")
-        if username == config.ADMIN_USERNAME and password == config.ADMIN_PASSWORD:
+        if username == config.ADMIN_USERNAME and _check_admin_password(password):
             session["logged_in"] = True; session["username"] = username
+            # Auto-upgrade plaintext password to hashed on first successful login
+            _hash_and_upgrade_password(password)
+            db.log_audit("LOGIN", f"Admin login from {request.remote_addr}", username)
             return jsonify({"ok": True})
+        db.log_audit("LOGIN_FAILED", f"Failed login attempt for '{username}' from {request.remote_addr}")
         return jsonify({"ok": False, "error": "Invalid username or password."}), 401
+
+    # Apply rate limiting to login if available
+    if limiter is not None:
+        try:
+            limiter.limit(config.RATE_LIMIT_LOGIN)(login_post)
+        except Exception as e:
+            log.warning("Could not apply rate limit to login: %s", e)
 
     @app.route("/logout")
     def logout():
-        session.clear(); return jsonify({"ok": True})
+        user = _get_username()
+        session.clear()
+        db.log_audit("LOGOUT", "", user)
+        return jsonify({"ok": True})
 
     # ── Snapshot / stream ──────────────────────────────────────────────────────
     @app.route("/snapshot/<camera_id>")
@@ -150,21 +226,14 @@ def _register_routes(app: Flask):
     def snapshot(camera_id):
         jpg = camera_manager.get_jpeg(camera_id) if camera_manager else b""
         if not jpg:
-            import base64
-            blank = base64.b64decode(
-                "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoH"
-                "BwYIDAoMCwsKCwsNCxAQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAAR"
-                "CAABAAEDASIA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAA"
-                "AAAAAAAP/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAA"
-                "AAAA/9oADAMBAAIRAxEAPwCwABmX/9k=")
-            return Response(blank, mimetype="image/jpeg")
+            return Response(_BLANK_JPEG, mimetype="image/jpeg")
         return Response(jpg, mimetype="image/jpeg")
 
     @app.route("/stream/<camera_id>")
     @login_required
     def stream(camera_id):
+        import time
         def generate():
-            import time
             while True:
                 jpg = camera_manager.get_jpeg(camera_id)
                 if jpg:
@@ -194,26 +263,19 @@ def _register_routes(app: Flask):
     @app.route("/api/attendance/clear", methods=["DELETE"])
     @login_required
     def api_clear_attendance():
-        import sqlite3 as _sql
         target = request.args.get("date", date.today().isoformat())
-        try:
-            c = _sql.connect(config.DB_PATH)
-            c.execute("DELETE FROM attendance WHERE date=?", (target,))
-            c.commit(); c.close()
+        if db.clear_attendance_by_date(target):
+            db.log_audit("CLEAR_ATTENDANCE", f"Cleared attendance for {target}", _get_username())
             return jsonify({"ok": True})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to clear attendance"}), 500
 
     @app.route("/api/attendance/clear_all", methods=["DELETE"])
     @login_required
     def api_clear_all_attendance():
-        import sqlite3 as _sql
-        try:
-            c = _sql.connect(config.DB_PATH)
-            c.execute("DELETE FROM attendance"); c.commit(); c.close()
+        if db.clear_all_attendance():
+            db.log_audit("CLEAR_ALL_ATTENDANCE", "Cleared all attendance records", _get_username())
             return jsonify({"ok": True})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to clear attendance"}), 500
 
     # ── Students ───────────────────────────────────────────────────────────────
     @app.route("/api/students")
@@ -227,15 +289,19 @@ def _register_routes(app: Flask):
     @app.route("/api/students/<student_id>", methods=["DELETE"])
     @login_required
     def api_delete_student(student_id):
+        student = db.get_student(student_id)
         db.delete_student(student_id)
         if engine: engine.remove_student(student_id)
+        db.log_audit("DELETE_STUDENT",
+                     f"Deleted {student['name'] if student else student_id} ({student_id})",
+                     _get_username())
         return jsonify({"ok": True})
 
     @app.route("/api/enroll", methods=["POST"])
     @login_required
     def api_enroll():
         from enroll import enroll_student
-        import tempfile, shutil
+        import tempfile
 
         sid        = request.form.get("student_id", "").strip()
         name       = request.form.get("name",       "").strip()
@@ -284,6 +350,8 @@ def _register_routes(app: Flask):
                                 section=section, roll_no=roll_no, image_paths=paths,
                                 stream=stream)
             if ok:
+                db.log_audit("ENROLL_STUDENT",
+                             f"Enrolled {name} ({sid}) Class {class_name}", _get_username())
                 return jsonify({"ok": True, "student_id": sid})
             return jsonify({"error": "No face detected in uploaded images"}), 422
         finally:
@@ -328,7 +396,6 @@ def _register_routes(app: Flask):
     @app.route("/api/classes", methods=["GET"])
     @login_required
     def api_get_classes():
-        # Classes come entirely from the DB — no config list involved
         return jsonify(db.list_classes())
 
     @app.route("/api/classes", methods=["POST"])
@@ -336,23 +403,17 @@ def _register_routes(app: Flask):
     def api_add_class():
         name = (request.json or {}).get("name", "").strip()
         if not name: return jsonify({"error": "Class name required"}), 400
-        # Seed default section(s) — this is how a class is registered in the DB
         db.ensure_default_sections([name])
+        db.log_audit("ADD_CLASS", f"Added class {name}", _get_username())
         return jsonify({"ok": True})
 
     @app.route("/api/classes/<path:class_name>", methods=["DELETE"])
     @login_required
     def api_delete_class(class_name):
-        # Remove all sections for this class from the DB
-        # (students are NOT deleted — they keep their class_name field)
-        import sqlite3 as _sql
-        try:
-            c = _sql.connect(config.DB_PATH)
-            c.execute("DELETE FROM class_sections WHERE class_name=?", (class_name,))
-            c.commit(); c.close()
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-        return jsonify({"ok": True})
+        if db.delete_class_sections(class_name):
+            db.log_audit("DELETE_CLASS", f"Deleted class {class_name}", _get_username())
+            return jsonify({"ok": True})
+        return jsonify({"error": "Failed to delete class"}), 500
 
     # ── Sections ───────────────────────────────────────────────────────────────
     @app.route("/api/sections", methods=["GET"])
@@ -377,7 +438,6 @@ def _register_routes(app: Flask):
     @app.route("/api/sections/<class_name>/<stream>/<section>", methods=["DELETE"])
     @login_required
     def api_delete_section(class_name, stream, section):
-        # stream will be the literal string "__none__" when empty (URL-safe)
         actual_stream = "" if stream == "__none__" else stream
         enrolled = db.list_students(class_name, actual_stream if actual_stream else None, section)
         if enrolled:
@@ -440,7 +500,9 @@ def _register_routes(app: Flask):
     @login_required
     def api_save_settings():
         data = request.json or {}
-        if config.save_settings(data): return jsonify({"ok": True})
+        if config.save_settings(data):
+            db.log_audit("SAVE_SETTINGS", "Settings updated", _get_username())
+            return jsonify({"ok": True})
         return jsonify({"error": "Failed to save"}), 500
 
     @app.route("/api/settings/password", methods=["POST"])
@@ -449,32 +511,38 @@ def _register_routes(app: Flask):
         pwd = (request.json or {}).get("password", "").strip()
         if len(pwd) < 6: return jsonify({"error": "Minimum 6 characters"}), 400
         try:
+            hashed = generate_password_hash(pwd)
             env_path = config.BASE_DIR / ".env"
             text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
             if "ADMIN_PASSWORD=" in text:
-                text = re.sub(r"^ADMIN_PASSWORD=.*$", f"ADMIN_PASSWORD={pwd}",
+                text = re.sub(r"^ADMIN_PASSWORD=.*$", f"ADMIN_PASSWORD={hashed}",
                               text, flags=re.MULTILINE)
             else:
-                text += f"\nADMIN_PASSWORD={pwd}\n"
+                text += f"\nADMIN_PASSWORD={hashed}\n"
             env_path.write_text(text, encoding="utf-8")
-            config.ADMIN_PASSWORD = pwd
+            config.ADMIN_PASSWORD = hashed
+            db.log_audit("CHANGE_PASSWORD", "Admin password changed", _get_username())
             return jsonify({"ok": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    # ── Audit log ──────────────────────────────────────────────────────────────
+    @app.route("/api/audit")
+    @login_required
+    def api_audit_log():
+        limit = int(request.args.get("limit", 100))
+        return jsonify(db.get_audit_log(limit))
 
     # ── Reset ──────────────────────────────────────────────────────────────────
     @app.route("/api/reset_all", methods=["DELETE"])
     @login_required
     def api_reset_all():
-        import sqlite3 as _sql, shutil
         try:
-            c = _sql.connect(config.DB_PATH)
-            c.execute("DELETE FROM attendance")
-            c.execute("UPDATE students SET is_active=0")
-            c.commit(); c.close()
+            db.reset_all_data()
             shutil.rmtree(config.EMBEDDINGS_DIR, ignore_errors=True)
             config.EMBEDDINGS_DIR.mkdir(exist_ok=True)
             if engine: engine.load_known_faces()
+            db.log_audit("RESET_ALL", "Full system reset — all data cleared", _get_username())
             return jsonify({"ok": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

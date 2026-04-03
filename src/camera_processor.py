@@ -178,7 +178,7 @@ class CameraProcessor(threading.Thread):
         for face in faces:
             sid, sim = self._engine.identify(face)
             face.student_id   = sid
-            face.student_name = self._engine._student_names.get(sid) if sid else None
+            face.student_name = self._engine.get_student_name(sid) if sid else None
             face.similarity   = sim
             if sid and self._should_mark(sid, sim):
                 self._mark(face)

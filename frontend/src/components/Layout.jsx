@@ -62,7 +62,6 @@ export default function Layout({ children, enrolledCount = 0 }) {
         <div className="aurora-orb aurora-blue" />
         <div className="aurora-orb aurora-orange" />
         <div className="aurora-orb aurora-green" />
-        <div className="aurora-orb aurora-purple" />
       </div>
 
       {/* ── Sidebar */}

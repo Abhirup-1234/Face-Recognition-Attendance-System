@@ -27,11 +27,12 @@ export function EnrollQueueProvider({ children }) {
       fd.append('class_name', meta.class_name)
       fd.append('section',    meta.section)
       fd.append('roll_no',    meta.roll_no)
+      fd.append('stream',     meta.stream || '')
 
       const images = [...(item.blobs || []), ...(item.files || [])]
       images.forEach((img, i) => {
-        if (img instanceof Blob) fd.append('images', img, `capture_${i}.jpg`)
-        else                      fd.append('images', img)
+        if (img instanceof Blob) fd.append('photos', img, `capture_${i}.jpg`)
+        else                      fd.append('photos', img)
       })
 
       // Fake progress while uploading

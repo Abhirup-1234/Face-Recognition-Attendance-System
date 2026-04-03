@@ -87,14 +87,14 @@ body {
   width: 800px; height: 800px;
   background: radial-gradient(circle, rgba(37,99,235,.70) 0%, transparent 60%);
   top: -200px; left: -200px;
-  animation: drift-a 28s ease-in-out infinite;
+  animation: drift-a 55s ease-in-out infinite;
 }
 
 .aurora-orange {
   width: 650px; height: 650px;
   background: radial-gradient(circle, rgba(249,115,22,.55) 0%, transparent 60%);
   top: 20%; right: -200px;
-  animation: drift-b 34s ease-in-out infinite;
+  animation: drift-b 62s ease-in-out infinite;
   animation-delay: -12s;
 }
 
@@ -102,47 +102,34 @@ body {
   width: 580px; height: 580px;
   background: radial-gradient(circle, rgba(22,163,74,.50) 0%, transparent 60%);
   bottom: -180px; left: 15%;
-  animation: drift-c 30s ease-in-out infinite;
+  animation: drift-c 50s ease-in-out infinite;
   animation-delay: -8s;
 }
 
-.aurora-purple {
-  width: 520px; height: 520px;
-  background: radial-gradient(circle, rgba(139,92,246,.45) 0%, transparent 60%);
-  top: 40%; left: 40%;
-  animation: drift-d 36s ease-in-out infinite;
-  animation-delay: -18s;
-}
 
 /* Blobs travel slowly across the full screen */
 @keyframes drift-a {
   0%   { transform: translate(0, 0)          scale(1);    }
-  20%  { transform: translate(35vw, 18vh)    scale(1.08); }
-  45%  { transform: translate(55vw, 50vh)    scale(0.94); }
-  70%  { transform: translate(20vw, 70vh)    scale(1.05); }
+  25%  { transform: translate(20vw, 12vh)    scale(1.04); }
+  50%  { transform: translate(38vw, 35vh)    scale(0.97); }
+  75%  { transform: translate(12vw, 50vh)    scale(1.03); }
   100% { transform: translate(0, 0)          scale(1);    }
 }
 @keyframes drift-b {
   0%   { transform: translate(0, 0)           scale(1);    }
-  25%  { transform: translate(-40vw, 30vh)    scale(1.06); }
-  50%  { transform: translate(-60vw, -20vh)   scale(0.92); }
-  75%  { transform: translate(-20vw, -50vh)   scale(1.04); }
+  25%  { transform: translate(-22vw, 18vh)    scale(1.03); }
+  50%  { transform: translate(-40vw, -14vh)   scale(0.96); }
+  75%  { transform: translate(-14vw, -32vh)   scale(1.02); }
   100% { transform: translate(0, 0)           scale(1);    }
 }
 @keyframes drift-c {
   0%   { transform: translate(0, 0)           scale(1);    }
-  30%  { transform: translate(30vw, -40vh)    scale(1.07); }
-  55%  { transform: translate(60vw, -10vh)    scale(0.93); }
-  80%  { transform: translate(15vw, -60vh)    scale(1.04); }
+  30%  { transform: translate(18vw, -22vh)    scale(1.03); }
+  60%  { transform: translate(38vw, -8vh)     scale(0.97); }
+  80%  { transform: translate(10vw, -38vh)    scale(1.02); }
   100% { transform: translate(0, 0)           scale(1);    }
 }
-@keyframes drift-d {
-  0%   { transform: translate(0, 0)           scale(1);    }
-  28%  { transform: translate(-25vw, -35vh)   scale(1.09); }
-  55%  { transform: translate(-50vw, 25vh)    scale(0.91); }
-  80%  { transform: translate(-10vw, 45vh)    scale(1.05); }
-  100% { transform: translate(0, 0)           scale(1);    }
-}
+
 
 
 
@@ -372,6 +359,7 @@ body {
 .sc-red    { border-color: rgba(239,68,68,.28);  box-shadow: 0 0 28px rgba(239,68,68,.09),  inset 0 1px 0 rgba(255,255,255,.06); }
 .sc-red:hover    { border-color: rgba(239,68,68,.55);  box-shadow: 0 10px 40px rgba(239,68,68,.22),  inset 0 1px 0 rgba(255,255,255,.08); }
 .sc-purple { border-color: rgba(139,92,246,.28); box-shadow: 0 0 28px rgba(139,92,246,.09), inset 0 1px 0 rgba(255,255,255,.06); }
+.sc-purple:hover { border-color: rgba(139,92,246,.55); box-shadow: 0 10px 40px rgba(139,92,246,.22), inset 0 1px 0 rgba(255,255,255,.08); }
 
 .stat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .9px; color: var(--text3); }
 .stat-value { font-size: 34px; font-weight: 800; font-family: 'Space Mono', monospace; letter-spacing: -1.5px; line-height: 1.15; }
@@ -918,10 +906,7 @@ code {
 
 /* ── Card hover lift ─────────────────────────────────────────────────────────── */
 .card {
-  transition: border-color .25s, box-shadow .25s, transform .25s;
-}
-.card:hover {
-  transform: translateY(-1px);
+  transition: border-color .25s, box-shadow .25s;
 }
 
 /* ── Stat card extra shimmer on hover ───────────────────────────────────────── */

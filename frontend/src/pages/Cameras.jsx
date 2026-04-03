@@ -1,10 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSocket } from '../context/SocketContext'
 import { cameras as camerasApi } from '../api'
-
-function initials(name) {
-  return String(name || 'XX').split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase()
-}
+import { initials } from '../utils'
 
 // Snapshot poller — avoids Chrome loading spinner
 function CameraFeed({ camId }) {
@@ -151,7 +148,23 @@ export default function Cameras() {
               </div>
 
               {/* Video feed */}
-              <CameraFeed camId={camId} />
+              {running ? (
+                <CameraFeed camId={camId} />
+              ) : (
+                <div className="vidbox" style={{ borderRadius:0, border:'none' }}>
+                  <div className="vid-err" style={{ flexDirection: 'column', gap: 16 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, opacity: 0.5 }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" width="52">
+                        <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+                      </svg>
+                      <span>Camera is stopped</span>
+                    </div>
+                    <button className="btn btn-primary" onClick={() => camAction(camId, 'start')}>
+                      Start Camera
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Footer stats */}
               <div style={{

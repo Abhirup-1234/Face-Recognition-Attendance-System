@@ -1,10 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSocket } from '../context/SocketContext'
 import { stats as statsApi } from '../api'
-
-function initials(name) {
-  return String(name || 'XX').split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase()
-}
+import { initials } from '../utils'
 
 const CONTENT_HEIGHT = 196   // matches .empty placeholder height exactly
 

@@ -147,12 +147,13 @@ function ClassesTab() {
         </div>
       </div>
 
-      {/* Class list */}
-      <div className="card">
-        <div className="card-title flex-sb">
+      {/* Class list — scrollable so page never grows unbounded */}
+      <div className="card" style={{display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 200px)'}}>
+        <div className="card-title flex-sb" style={{flexShrink:0}}>
           <span><span className="card-icon">▦</span> Classes & Sections</span>
           <span style={{fontSize:12,color:'var(--text3)'}}>{classList.length} class(es)</span>
         </div>
+        <div style={{overflowY:'auto',flex:1,marginRight:-4,paddingRight:4}}>
         {classList.length===0 ? <div className="muted">No classes yet.</div>
           : classList.map(cls => {
             const totalCount = students.filter(s=>s.class_name===cls).length
@@ -187,6 +188,7 @@ function ClassesTab() {
             )
           })
         }
+        </div>{/* end scroll container */}
       </div>
     </div>
   )
