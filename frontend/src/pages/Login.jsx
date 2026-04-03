@@ -19,6 +19,10 @@ export default function Login({ onLogin }) {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ username, password }),
       })
+      if (res.status === 429) {
+        setError('Too many attempts. Please try again in a minute.')
+        return
+      }
       const data = await res.json().catch(() => ({}))
       if (data.ok) {
         onLogin?.()

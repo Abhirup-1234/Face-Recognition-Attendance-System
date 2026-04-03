@@ -32,20 +32,33 @@ load_dotenv(BASE_DIR / ".env")
 
 
 def _ensure_secret_key() -> str:
-    """Generate a strong SECRET_KEY and persist it to .env if missing."""
-    key = os.getenv("SECRET_KEY", "").strip()
-    if key and key != "key":
-        return key
-    key = secrets.token_hex(32)
+    """Generate a strong SECRET_KEY and persist it to .env if missing.
+    Also ensures default admin credentials are in the file for new users."""
     env_path = BASE_DIR / ".env"
     text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    if "SECRET_KEY=" in text:
-        import re
-        text = re.sub(r"^SECRET_KEY=.*$", f"SECRET_KEY={key}", text, flags=re.MULTILINE)
-    else:
-        text += f"\nSECRET_KEY={key}\n"
-    env_path.write_text(text, encoding="utf-8")
-    os.environ["SECRET_KEY"] = key
+    changed = False
+
+    key = os.getenv("SECRET_KEY", "").strip()
+    if not key or key == "key":
+        key = secrets.token_hex(32)
+        if "SECRET_KEY=" in text:
+            import re
+            text = re.sub(r"^SECRET_KEY=.*$", f"SECRET_KEY={key}", text, flags=re.MULTILINE)
+        else:
+            text += f"\nSECRET_KEY={key}\n"
+        os.environ["SECRET_KEY"] = key
+        changed = True
+
+    if "ADMIN_USERNAME=" not in text:
+        text += "ADMIN_USERNAME=admin\n"
+        changed = True
+    if "ADMIN_PASSWORD=" not in text:
+        text += "ADMIN_PASSWORD=admin123\n"
+        changed = True
+
+    if changed:
+        env_path.write_text(text.strip() + "\n", encoding="utf-8")
+        
     return key
 
 

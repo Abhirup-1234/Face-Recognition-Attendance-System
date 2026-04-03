@@ -138,6 +138,9 @@ def startup(app):
     log.info("  FaceTrack AI — starting up")
     log.info("=" * 60)
 
+    # Immediately hash plaintext passwords on startup
+    _hash_and_upgrade_password(config.ADMIN_PASSWORD)
+
     db.init_db()
     db.ensure_default_sections(config.DEFAULT_CLASSES)
 
@@ -189,7 +192,15 @@ def _register_routes(app: Flask, limiter=None):
                             "enrolled": get_enrolled_count()})
         return jsonify({"logged_in": False, "enrolled": 0})
 
+    def _conditionally_limit(limit_string):
+        def decorator(f):
+            if limiter:
+                return limiter.limit(limit_string)(f)
+            return f
+        return decorator
+
     @app.route("/login", methods=["POST"])
+    @_conditionally_limit(config.RATE_LIMIT_LOGIN)
     def login_post():
         if request.is_json:
             data = request.json or {}
@@ -205,13 +216,6 @@ def _register_routes(app: Flask, limiter=None):
             return jsonify({"ok": True})
         db.log_audit("LOGIN_FAILED", f"Failed login attempt for '{username}' from {request.remote_addr}")
         return jsonify({"ok": False, "error": "Invalid username or password."}), 401
-
-    # Apply rate limiting to login if available
-    if limiter is not None:
-        try:
-            limiter.limit(config.RATE_LIMIT_LOGIN)(login_post)
-        except Exception as e:
-            log.warning("Could not apply rate limit to login: %s", e)
 
     @app.route("/logout")
     def logout():
