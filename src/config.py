@@ -19,12 +19,13 @@ EMBEDDINGS_DIR  = DATA_DIR / "embeddings"
 STUDENT_IMG_DIR = DATA_DIR / "student_photos"
 LOG_DIR         = DATA_DIR / "logs"
 REPORT_DIR      = DATA_DIR / "reports"
+BACKUP_DIR      = DATA_DIR / "backups"
 FRONTEND_DIST   = BASE_DIR / "frontend" / "dist"
 SETTINGS_FILE   = BASE_DIR / "settings.json"
 
 # Only directories that must always exist (models dir removed — InsightFace
 # downloads its own models to ~/.insightface automatically)
-for _d in [DATA_DIR, EMBEDDINGS_DIR, STUDENT_IMG_DIR, LOG_DIR, REPORT_DIR]:
+for _d in [DATA_DIR, EMBEDDINGS_DIR, STUDENT_IMG_DIR, LOG_DIR, REPORT_DIR, BACKUP_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 # ── Load .env ──────────────────────────────────────────────────────────────────

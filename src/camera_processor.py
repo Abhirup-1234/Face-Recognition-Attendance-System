@@ -2,6 +2,11 @@
 Per-camera background thread.
 Reads frames → encodes for streaming always.
 Face detection + identification only when recognition_enabled = True.
+
+Includes a robust reconnect watchdog for RTSP/USB cameras:
+- Infinite reconnect loop on frame failure
+- 15-second frozen-stream watchdog (handles silently-stuck RTSP)
+- Emits camera_status Socket.IO events on state changes
 """
 import time
 import logging
@@ -18,6 +23,15 @@ import database as db
 from face_engine import FaceEngine, FaceResult
 
 log = logging.getLogger(__name__)
+
+# How long (seconds) to wait between reconnect attempts
+_RECONNECT_DELAY   = 5
+# How long (seconds) without a new frame before forcing a reconnect
+_WATCHDOG_TIMEOUT  = 15
+# Seconds to sleep between reconnect bursts after many failures
+_LONG_SLEEP        = 30
+# Attempts per burst before taking a long sleep
+_ATTEMPTS_PER_BURST = 5
 
 
 class CameraProcessor(threading.Thread):
@@ -71,6 +85,18 @@ class CameraProcessor(threading.Thread):
         with self._recognition_lock:
             return self._recognition_enabled
 
+    def _emit_status(self, status: str):
+        """Update stats and emit a Socket.IO event so the UI reacts instantly."""
+        self.stats["status"] = status
+        if self.socketio:
+            try:
+                self.socketio.emit("camera_status", {
+                    "camera_id": self.camera_id,
+                    "status":    status,
+                })
+            except Exception:
+                pass
+
     def run(self):
         if isinstance(self.source, str) and Path(self.source).is_dir():
             self._run_folder()
@@ -83,9 +109,9 @@ class CameraProcessor(threading.Thread):
         folder = Path(self.source)
         images = sorted([p for p in folder.iterdir() if p.suffix.lower() in EXTS])
         if not images:
-            self.stats["status"] = "error"; return
+            self._emit_status("error"); return
 
-        self.stats["status"] = "running"
+        self._emit_status("running")
         self.stats["capture_fps"] = round(1.0 / max(0.1, config.IMAGE_FOLDER_DELAY), 1)
         idx = 0
 
@@ -121,31 +147,51 @@ class CameraProcessor(threading.Thread):
             while time.time() < deadline and not self._stop_evt.is_set():
                 time.sleep(0.05)
 
-        self.stats["status"] = "stopped"
+        self._emit_status("stopped")
 
-    # ── Live camera mode ────────────────────────────────────────────────────────
+    # ── Live camera mode with watchdog reconnection ─────────────────────────────
     def _run_capture(self):
         cap = self._open_capture()
         if cap is None:
-            self.stats["status"] = "error"; return
+            self._emit_status("error")
+            return
 
-        self.stats["status"] = "running"
-        frame_count = 0
-        fps_count   = 0
-        fps_ts      = time.time()
+        self._emit_status("running")
+        frame_count     = 0
+        fps_count       = 0
+        fps_ts          = time.time()
+        last_frame_ts   = time.time()   # watchdog timestamp
 
         while not self._stop_evt.is_set():
-            ret, frame = cap.read()
-            if not ret:
-                log.warning("[%s] Frame read failed — reconnecting", self.camera_id)
-                cap.release(); time.sleep(2)
-                cap = self._open_capture()
+
+            # ── Frozen-stream watchdog ────────────────────────────────────────
+            if time.time() - last_frame_ts > _WATCHDOG_TIMEOUT:
+                log.warning(
+                    "[%s] No new frame for %ds — stream may be frozen, reconnecting",
+                    self.camera_id, _WATCHDOG_TIMEOUT,
+                )
+                cap.release()
+                cap = self._reconnect_loop()
                 if cap is None:
-                    self.stats["status"] = "error"; break
+                    break
+                last_frame_ts = time.time()
                 continue
 
-            frame_count += 1
-            fps_count   += 1
+            ret, frame = cap.read()
+
+            if not ret or frame is None:
+                log.warning("[%s] cap.read() returned no frame — entering reconnect loop", self.camera_id)
+                cap.release()
+                cap = self._reconnect_loop()
+                if cap is None:
+                    break
+                last_frame_ts = time.time()
+                continue
+
+            # Successful frame
+            last_frame_ts = time.time()
+            frame_count  += 1
+            fps_count    += 1
             now = time.time()
             if now - fps_ts >= 3.0:
                 self.stats["capture_fps"] = round(fps_count / (now - fps_ts), 1)
@@ -170,8 +216,39 @@ class CameraProcessor(threading.Thread):
             self.stats["faces_detected"] = len(identified)
             self._encode(FaceEngine.draw_results(frame, identified))
 
-        cap.release()
-        self.stats["status"] = "stopped"
+        if cap:
+            cap.release()
+        self._emit_status("stopped")
+
+    def _reconnect_loop(self):
+        """
+        Keep trying to reconnect until successful or stop is requested.
+        Backs off after _ATTEMPTS_PER_BURST failures to avoid hammering the source.
+        Returns a working VideoCapture, or None if stopped.
+        """
+        self._emit_status("reconnecting")
+        attempt = 0
+
+        while not self._stop_evt.is_set():
+            attempt += 1
+            log.info("[%s] Reconnect attempt %d…", self.camera_id, attempt)
+            cap = self._open_capture(max_attempts=1)
+            if cap is not None:
+                log.info("[%s] Reconnected successfully on attempt %d", self.camera_id, attempt)
+                self._emit_status("running")
+                return cap
+
+            # After a burst of failed attempts, take a longer break
+            if attempt % _ATTEMPTS_PER_BURST == 0:
+                log.warning(
+                    "[%s] %d consecutive reconnect failures — sleeping %ds before next burst",
+                    self.camera_id, attempt, _LONG_SLEEP,
+                )
+                self._stop_evt.wait(timeout=_LONG_SLEEP)
+            else:
+                self._stop_evt.wait(timeout=_RECONNECT_DELAY)
+
+        return None   # Stop was requested
 
     def _identify_and_mark(self, faces):
         identified = []
@@ -186,17 +263,21 @@ class CameraProcessor(threading.Thread):
             identified.append(face)
         return identified
 
-    def _open_capture(self):
-        for attempt in range(5):
-            cap = cv2.VideoCapture(self.source)
+    def _open_capture(self, max_attempts: int = 5):
+        for attempt in range(max_attempts):
+            backend = cv2.CAP_DSHOW if config.USE_DSHOW else cv2.CAP_ANY
+            cap = cv2.VideoCapture(self.source, backend)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  config.FRAME_WIDTH)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 return cap
-            log.warning("[%s] Cannot open (attempt %d/5)", self.camera_id, attempt + 1)
-            time.sleep(3)
-        log.error("[%s] Failed to open camera.", self.camera_id)
+            cap.release()
+            if max_attempts > 1:
+                log.warning("[%s] Cannot open (attempt %d/%d)", self.camera_id, attempt + 1, max_attempts)
+                time.sleep(3)
+        if max_attempts > 1:
+            log.error("[%s] Failed to open camera after %d attempts.", self.camera_id, max_attempts)
         return None
 
     def _encode(self, bgr: np.ndarray):

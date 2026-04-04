@@ -5,6 +5,9 @@
 flask>=3.0.0
 flask-socketio>=5.3.6
 
+# Production WSGI server (Windows-compatible)
+waitress>=3.0.0
+
 # Environment variable loading
 python-dotenv>=1.0.1
 

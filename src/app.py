@@ -9,7 +9,9 @@ import webbrowser
 import re
 import shutil
 import base64
-from datetime import date
+import zipfile
+import io
+from datetime import date, datetime
 from functools import wraps
 from pathlib import Path
 
@@ -40,8 +42,13 @@ class _WFilter(logging.Filter):
     def filter(self, r): return "write() before start_response" not in r.getMessage()
 logging.getLogger("werkzeug").addFilter(_WFilter())
 
-socketio = SocketIO(async_mode="threading", cors_allowed_origins=config.CORS_ORIGINS,
-                    logger=False, engineio_logger=False)
+socketio = SocketIO(
+    async_mode="threading",
+    cors_allowed_origins=config.CORS_ORIGINS,
+    logger=False,
+    engineio_logger=False,
+    allow_upgrades=False
+)
 
 camera_manager: CameraManager = None   # type: ignore[assignment]
 engine: FaceEngine = None               # type: ignore[assignment]
@@ -536,6 +543,113 @@ def _register_routes(app: Flask, limiter=None):
     def api_audit_log():
         limit = int(request.args.get("limit", 100))
         return jsonify(db.get_audit_log(limit))
+
+    # ── Backup & Restore ────────────────────────────────────────────────────────
+    @app.route("/api/backup/create", methods=["POST"])
+    @login_required
+    def api_backup_create():
+        """Create a timestamped zip of all data and return it as a download."""
+        try:
+            ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+            name = f"facetrack_backup_{ts}.zip"
+            buf  = io.BytesIO()
+
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                # Database
+                if config.DB_PATH.exists():
+                    zf.write(config.DB_PATH, "data/attendance.db")
+                # Embeddings
+                for f in config.EMBEDDINGS_DIR.rglob("*"):
+                    if f.is_file():
+                        zf.write(f, f"data/embeddings/{f.name}")
+                # Student photos
+                for f in config.STUDENT_IMG_DIR.rglob("*"):
+                    if f.is_file():
+                        rel = f.relative_to(config.STUDENT_IMG_DIR)
+                        zf.write(f, f"data/student_photos/{rel}")
+                # Settings
+                if config.SETTINGS_FILE.exists():
+                    zf.write(config.SETTINGS_FILE, "settings.json")
+                # Manifest
+                zf.writestr("BACKUP_MANIFEST.txt",
+                    f"FaceTrack AI Backup\nCreated: {ts}\nVersion: 1.0\n")
+
+            buf.seek(0)
+            db.log_audit("BACKUP_CREATE", f"Backup created: {name}", _get_username())
+            return Response(
+                buf.read(),
+                mimetype="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            )
+        except Exception as e:
+            log.error("Backup creation failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/backup/restore", methods=["POST"])
+    @login_required
+    def api_backup_restore():
+        """Restore data from an uploaded backup zip, then auto-restart cameras."""
+        if "backup" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        f = request.files["backup"]
+        if not f.filename.endswith(".zip"):
+            return jsonify({"error": "File must be a .zip backup"}), 400
+        try:
+            data = f.read()
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                names = zf.namelist()
+                # Validate — must contain the manifest
+                if "BACKUP_MANIFEST.txt" not in names:
+                    return jsonify({"error": "Invalid backup file — missing manifest"}), 400
+
+                # Stop cameras before touching files
+                if camera_manager:
+                    camera_manager.stop_all()
+
+                # Restore database
+                if "data/attendance.db" in names:
+                    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    config.DB_PATH.write_bytes(zf.read("data/attendance.db"))
+
+                # Restore embeddings
+                shutil.rmtree(config.EMBEDDINGS_DIR, ignore_errors=True)
+                config.EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
+                for entry in names:
+                    if entry.startswith("data/embeddings/") and not entry.endswith("/"):
+                        dest = config.EMBEDDINGS_DIR / Path(entry).name
+                        dest.write_bytes(zf.read(entry))
+
+                # Restore student photos
+                shutil.rmtree(config.STUDENT_IMG_DIR, ignore_errors=True)
+                config.STUDENT_IMG_DIR.mkdir(parents=True, exist_ok=True)
+                for entry in names:
+                    if entry.startswith("data/student_photos/") and not entry.endswith("/"):
+                        # Preserve sub-folder structure
+                        rel  = entry[len("data/student_photos/"):]
+                        dest = config.STUDENT_IMG_DIR / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(zf.read(entry))
+
+                # Restore settings
+                if "settings.json" in names:
+                    config.SETTINGS_FILE.write_bytes(zf.read("settings.json"))
+                    config.load_settings()
+
+            # Reload face embeddings into memory
+            if engine:
+                engine.load_known_faces()
+
+            # Auto-restart cameras (Option A)
+            if camera_manager:
+                camera_manager.start_all()
+
+            db.log_audit("BACKUP_RESTORE", f"Backup restored: {f.filename}", _get_username())
+            return jsonify({"ok": True, "message": "Backup restored. Cameras restarted."})
+        except zipfile.BadZipFile:
+            return jsonify({"error": "Corrupt or invalid zip file"}), 400
+        except Exception as e:
+            log.error("Backup restore failed: %s", e)
+            return jsonify({"error": str(e)}), 500
 
     # ── Reset ──────────────────────────────────────────────────────────────────
     @app.route("/api/reset_all", methods=["DELETE"])

@@ -116,4 +116,12 @@ export const settings = {
 }
 
 // ── System ────────────────────────────────────────────────────────────────────
-export const system = { resetAll: () => request('DELETE', '/api/reset_all') }
+export const system = {
+  resetAll:      ()     => request('DELETE', '/api/reset_all'),
+  createBackup:  ()     => request('POST',   '/api/backup/create'),
+  restoreBackup: (file) => {
+    const fd = new FormData()
+    fd.append('backup', file)
+    return request('POST', '/api/backup/restore', fd, true)
+  },
+}

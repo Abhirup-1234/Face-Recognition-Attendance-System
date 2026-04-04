@@ -68,9 +68,19 @@ export default function Cameras() {
 
   useEffect(() => {
     if (!socket) return
-    const handler = event => setFeed(prev => [event, ...prev].slice(0, 60))
-    socket.on('attendance_marked', handler)
-    return () => socket.off('attendance_marked', handler)
+    const onAttendance = event => setFeed(prev => [event, ...prev].slice(0, 60))
+    const onCamStatus  = ({ camera_id, status }) => {
+      setCamStats(prev => ({
+        ...prev,
+        [camera_id]: { ...(prev[camera_id] || {}), status },
+      }))
+    }
+    socket.on('attendance_marked', onAttendance)
+    socket.on('camera_status',     onCamStatus)
+    return () => {
+      socket.off('attendance_marked', onAttendance)
+      socket.off('camera_status',     onCamStatus)
+    }
   }, [socket])
 
   const camAction = useCallback(async (camId, action) => {
@@ -104,10 +114,11 @@ export default function Cameras() {
       {/* Camera feeds */}
       <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
         {camIds.map(camId => {
-          const s           = camStats[camId] || {}
-          const running     = s.status === 'running'
-          const recOn       = s.recognition_enabled === true
-          const isPending   = toggling[camId]
+          const s             = camStats[camId] || {}
+          const running        = s.status === 'running'
+          const reconnecting   = s.status === 'reconnecting'
+          const recOn          = s.recognition_enabled === true
+          const isPending      = toggling[camId]
 
           return (
             <div key={camId} className="card" style={{ padding:0, overflow:'hidden' }}>
@@ -118,9 +129,11 @@ export default function Cameras() {
               }}>
                 <div className="flex">
                   <span style={{ fontSize:14, fontWeight:700 }}>{camId}</span>
-                  <span className={`sdot ${running ? 'green' : s.status==='error' ? 'red' : 'yellow'}`}/>
+                  <span className={`sdot ${
+                    running ? 'green' : reconnecting ? 'yellow' : s.status === 'error' ? 'red' : 'yellow'
+                  }`}/>
                   <span style={{ fontSize:11, color:'var(--text3)', fontFamily:'Space Mono,monospace' }}>
-                    {running ? 'LIVE' : (s.status||'STOPPED').toUpperCase()}
+                    {running ? 'LIVE' : reconnecting ? 'RECONNECTING' : (s.status||'STOPPED').toUpperCase()}
                   </span>
                 </div>
 
@@ -150,6 +163,21 @@ export default function Cameras() {
               {/* Video feed */}
               {running ? (
                 <CameraFeed camId={camId} />
+              ) : reconnecting ? (
+                <div className="vidbox" style={{ borderRadius:0, border:'none' }}>
+                  <div className="vid-err" style={{ flexDirection: 'column', gap: 12 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, opacity: 0.6 }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="1.4" width="48">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                      </svg>
+                      <span style={{ color: '#fbbf24', fontSize: 13, fontWeight: 600 }}>Reconnecting…</span>
+                      <span style={{ color: 'var(--text3)', fontSize: 11 }}>Camera will resume automatically</span>
+                    </div>
+                    <span className="spin" style={{ width: 20, height: 20, borderTopColor: '#fbbf24' }} />
+                  </div>
+                </div>
               ) : (
                 <div className="vidbox" style={{ borderRadius:0, border:'none' }}>
                   <div className="vid-err" style={{ flexDirection: 'column', gap: 16 }}>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { settings as settingsApi, attendance as attendanceApi, system as systemApi } from '../api'
 import { useToast } from '../context/ToastContext'
 
@@ -54,11 +54,14 @@ export default function Settings() {
     SCHOOL_NAME:            'Narula Public School',
     ADMIN_DISPLAY_NAME:     'Administrator',
   })
-  const [sysInfo, setSysInfo]   = useState({})
-  const [newPass, setNewPass]   = useState('')
-  const [confPass, setConfPass] = useState('')
-  const [saving,  setSaving]    = useState(false)
-  const [saveMsg, setSaveMsg]   = useState('')
+  const [sysInfo,   setSysInfo]   = useState({})
+  const [newPass,   setNewPass]   = useState('')
+  const [confPass,  setConfPass]  = useState('')
+  const [saving,    setSaving]    = useState(false)
+  const [saveMsg,   setSaveMsg]   = useState('')
+  const [backing,   setBacking]   = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const restoreRef = useRef(null)
 
   useEffect(() => {
     fetch('/api/settings', { credentials: 'include' })
@@ -117,6 +120,40 @@ export default function Settings() {
     if (!confirm('Are you absolutely sure?')) return
     const res = await systemApi.resetAll()
     if (res?.data?.ok) { toast('System reset.', 'success'); setTimeout(() => window.location.href = '/', 2000) }
+  }
+
+  const createBackup = async () => {
+    setBacking(true)
+    try {
+      const res = await fetch('/api/backup/create', { method: 'POST', credentials: 'include' })
+      if (!res.ok) { toast('Backup failed.', 'error'); return }
+      const blob = await res.blob()
+      const cd   = res.headers.get('Content-Disposition') || ''
+      const name = cd.match(/filename="?([^"]+)"?/)?.[1] || 'facetrack_backup.zip'
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      a.href = url; a.download = name; a.click()
+      URL.revokeObjectURL(url)
+      toast('Backup downloaded.', 'success')
+    } catch { toast('Backup failed.', 'error') }
+    finally { setBacking(false) }
+  }
+
+  const restoreBackup = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = '' // reset so same file can be re-selected
+    if (!confirm(`Restore from "${file.name}"? Current data will be overwritten.`)) return
+    setRestoring(true)
+    try {
+      const res = await systemApi.restoreBackup(file)
+      if (res?.data?.ok) {
+        toast('Backup restored. Cameras restarting…', 'success')
+      } else {
+        toast(res?.data?.error || 'Restore failed.', 'error')
+      }
+    } catch { toast('Restore failed.', 'error') }
+    finally { setRestoring(false) }
   }
 
   return (
@@ -252,6 +289,25 @@ export default function Settings() {
             <div className="info-row"><span className="info-key">Enrolled Students</span><span className="info-val">{sysInfo.enrolled || 0}</span></div>
             <div className="info-row"><span className="info-key">Detector</span><span className="info-val" style={{ color: 'var(--success)' }}>RetinaFace ✓</span></div>
             <div className="info-row"><span className="info-key">Recognizer</span><span className="info-val" style={{ color: 'var(--success)' }}>ArcFace ✓</span></div>
+          </div>
+
+          {/* Backup & Restore */}
+          <div className="card">
+            <div className="card-title"><span className="card-icon">🗂</span> Backup &amp; Restore</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.7 }}>
+                Backup includes: students, attendance, embeddings, and settings.<br/>
+                <strong style={{ color: 'var(--text2)' }}>Note:</strong> Passwords (.env) are not included for security.
+              </div>
+              <button className="btn btn-ghost" onClick={createBackup} disabled={backing}>
+                {backing ? <span className="spin" /> : '⬇'} {backing ? 'Creating…' : 'Create Backup'}
+              </button>
+              <button className="btn btn-ghost" onClick={() => restoreRef.current?.click()} disabled={restoring}>
+                {restoring ? <span className="spin" /> : '⬆'} {restoring ? 'Restoring…' : 'Restore from Backup'}
+              </button>
+              <input ref={restoreRef} type="file" accept=".zip" style={{ display: 'none' }}
+                onChange={restoreBackup} />
+            </div>
           </div>
 
           {/* Data management */}

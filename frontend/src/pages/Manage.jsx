@@ -106,7 +106,7 @@ function ClassesTab() {
                 <span style={{fontSize:13,color:'var(--secondary)',fontFamily:'Space Mono,monospace',fontWeight:700}}>
                   Section {sec}
                 </span>
-                {cnt>0 && <span className="badge badge-gray" style={{fontSize:11}}>{cnt} student(s)</span>}
+                <span className="badge badge-green" style={{fontSize:11}}>{cnt} student{cnt === 1 ? '' : 's'}</span>
               </div>
               <button className="btn btn-danger btn-sm" style={{padding:'3px 10px',fontSize:11}}
                 onClick={()=>deleteSection(cls,stream,sec)}>Remove</button>
@@ -126,29 +126,9 @@ function ClassesTab() {
   }
 
   return (
-    <div className="g2" style={{gap:20,alignItems:'start'}}>
-      {/* Add class */}
-      <div className="card">
-        <div className="card-title"><span className="card-icon">⌾</span> Add New Class</div>
-        <p style={{fontSize:13,color:'var(--text3)',marginBottom:16}}>
-          Classes are named with Roman numerals: <code>I</code>, <code>II</code>, ..., <code>X</code>, <code>XI</code>, <code>XII</code>,
-          or <code>Nursery</code>, <code>LKG</code>, <code>UKG</code>.<br/>
-          Classes XI and XII automatically get three fixed streams: Science, Commerce, Humanities.
-          Section A is seeded automatically for each.
-        </p>
-        <div style={{display:'flex',gap:10,alignItems:'flex-end'}}>
-          <div className="form-group" style={{flex:1}}>
-            <label className="form-label">Class Name</label>
-            <input className="form-input" placeholder="e.g. VIII or Nursery"
-              value={newClass} onChange={e=>setNewClass(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&addClass()}/>
-          </div>
-          <button className="btn btn-primary" onClick={addClass}>+ Add Class</button>
-        </div>
-      </div>
-
+    <div style={{ width: '100%' }}>
       {/* Class list — scrollable so page never grows unbounded */}
-      <div className="card" style={{display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 200px)'}}>
+      <div className="card" style={{display:'flex',flexDirection:'column', height: 'calc(100vh - 200px)', minHeight: 400}}>
         <div className="card-title flex-sb" style={{flexShrink:0}}>
           <span><span className="card-icon">▦</span> Classes & Sections</span>
           <span style={{fontSize:12,color:'var(--text3)'}}>{classList.length} class(es)</span>
@@ -158,26 +138,32 @@ function ClassesTab() {
           : classList.map(cls => {
             const totalCount = students.filter(s=>s.class_name===cls).length
             const isStream   = STREAM_CLASSES.has(cls)
+            const totalSecs  = isStream
+              ? FIXED_STREAMS.reduce((acc, st) => acc + (secMap[`${cls}::${st}`]||[]).length, 0)
+              : (secMap[cls]||[]).length
+
             return (
               <div key={cls} style={{padding:'12px 0',borderBottom:'1px solid var(--border)'}}>
                 <div className="flex-sb" style={{marginBottom:6}}>
                   <div className="flex">
                     <span style={{fontSize:14,fontWeight:700}}>Class {cls}</span>
-                    {isStream && <span className="badge badge-orange" style={{fontSize:11}}>Streams</span>}
-                    {totalCount>0 && <span className="badge badge-blue">{totalCount} student(s)</span>}
+                    {isStream && <span className="badge badge-orange" style={{fontSize:11}}>{FIXED_STREAMS.length} stream{FIXED_STREAMS.length === 1 ? '' : 's'}</span>}
+                    <span className="badge badge-cyan" style={{fontSize:11}}>{totalSecs} section{totalSecs === 1 ? '' : 's'}</span>
+                    <span className="badge badge-blue">{totalCount} student{totalCount === 1 ? '' : 's'}</span>
                   </div>
-                  <button className="btn btn-danger btn-sm" onClick={()=>deleteClass(cls)}>Remove Class</button>
                 </div>
 
                 {isStream ? (
                   // XI/XII: show stream → sections tree
                   FIXED_STREAMS.map(stream => {
                     const streamCount = students.filter(s=>s.class_name===cls && s.stream===stream).length
+                    const streamSecs  = (secMap[`${cls}::${stream}`]||[]).length
                     return (
                       <div key={stream} style={{paddingLeft:12,marginBottom:10}}>
                         <div className="flex" style={{marginBottom:4}}>
                           <span style={{fontSize:13,fontWeight:600,color:'var(--warning)'}}>⟁ {stream}</span>
-                          {streamCount>0 && <span className="badge badge-gray" style={{fontSize:11}}>{streamCount} student(s)</span>}
+                          <span className="badge badge-cyan" style={{fontSize:11}}>{streamSecs} section{streamSecs === 1 ? '' : 's'}</span>
+                          <span className="badge badge-yellow" style={{fontSize:11}}>{streamCount} student{streamCount === 1 ? '' : 's'}</span>
                         </div>
                         {renderSections(cls, stream)}
                       </div>

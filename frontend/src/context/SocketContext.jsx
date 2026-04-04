@@ -8,7 +8,7 @@ export function SocketProvider({ children }) {
   const [connected, setConnected] = useState(false)
 
   useEffect(() => {
-    const socket = io({ transports: ['websocket', 'polling'] })
+    const socket = io({ transports: ['polling'] })
     socketRef.current = socket
 
     socket.on('connect',    () => setConnected(true))
