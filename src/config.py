@@ -29,7 +29,9 @@ for _d in [DATA_DIR, EMBEDDINGS_DIR, STUDENT_IMG_DIR, LOG_DIR, REPORT_DIR, BACKU
     _d.mkdir(parents=True, exist_ok=True)
 
 # ── Load .env ──────────────────────────────────────────────────────────────────
-load_dotenv(BASE_DIR / ".env")
+# Override ambient OS/user environment variables so the project's .env remains
+# the source of truth for app credentials/settings.
+load_dotenv(BASE_DIR / ".env", override=True)
 
 
 def _ensure_secret_key() -> str:
@@ -86,19 +88,38 @@ CORS_ORIGINS = [
 RATE_LIMIT_LOGIN = "5/minute"
 
 # ── Cameras ────────────────────────────────────────────────────────────────────
-CAMERAS = {"CAM-101": 1}
+CAMERAS = {
+        "CAM-101": 1,
+        # "ACTORS": "testvid2.mp4"
+        # "HARRY POTTER": "C:/Users/Abhirup/Desktop/Dataset/Harry Potter/Testing"
+    }
 FRAME_WIDTH        = 1280
 FRAME_HEIGHT       = 720
 PROCESS_EVERY_N    = 5
 STREAM_FPS         = 10
 USE_DSHOW          = False
-IMAGE_FOLDER_DELAY = 2.0
+IMAGE_FOLDER_DELAY = 3.0
 
 # ── RetinaFace / ArcFace ───────────────────────────────────────────────────────
 DET_THRESH             = 0.5
 REC_THRESHOLD          = 0.4
 EMBEDDINGS_PER_STUDENT = 20
 CONFIRM_FRAMES         = 3
+
+# ── Inference Provider (OpenVINO) ──────────────────────────────────────────────
+# NOTE: GPU (Intel iGPU) has been disabled.
+# The buffalo_l (RetinaFace + ArcFace) ONNX models trigger two known OpenVINO
+# GPU-backend kernel errors:
+#   • "Input VX intersects with VY" — register-allocation bug in CISA GPU backend
+#   • "Explicit input N must not follow an implicit input 0" — I/O ordering bug
+# These cause silent GPU→CPU fallback with extra overhead, making GPU SLOWER than
+# plain CPU. OpenVINO CPU (with AVX/VNNI optimisations) outperforms ONNX CPU
+# and is the correct backend for this hardware.
+OPENVINO_DEVICE_PRIORITY = ["CPU"]   # GPU removed — kernel errors on buffalo_l
+# 0 = auto (use all available cores); set >0 to reserve cores for Flask/cameras
+OPENVINO_NUM_THREADS     = 0
+# Enable OpenVINO model caching — speeds up subsequent launches dramatically
+OPENVINO_CACHE_DIR       = str(DATA_DIR / "openvino_cache")
 
 # ── Preprocessing ──────────────────────────────────────────────────────────────
 ENABLE_CLAHE     = True

@@ -24,6 +24,13 @@ os.environ["ADMIN_PASSWORD"] = "testpass123"
 def _setup_test_dirs():
     """Create temp dirs for test data and clean up after."""
     import config
+    # Pin auth/runtime secrets for tests so host .env values never leak in.
+    os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
+    os.environ["ADMIN_USERNAME"] = "admin"
+    os.environ["ADMIN_PASSWORD"] = "testpass123"
+    config.SECRET_KEY = "test-secret-key-not-for-production"
+    config.ADMIN_USERNAME = "admin"
+    config.ADMIN_PASSWORD = "testpass123"
     config.DB_PATH = Path(_tmp) / "test.db"
     config.EMBEDDINGS_DIR = Path(_tmp) / "embeddings"
     config.STUDENT_IMG_DIR = Path(_tmp) / "student_photos"

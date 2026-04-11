@@ -16,7 +16,9 @@ opencv-contrib-python>=4.9.0
 
 # Face detection (RetinaFace) + recognition (ArcFace)
 insightface>=0.7.3
-onnxruntime>=1.17.0
+onnxruntime-openvino>=1.24.0
+openvino>=2025.0
+onnx>=1.14.0
 
 # Numerical / ML
 numpy>=1.26.0

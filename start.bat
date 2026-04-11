@@ -6,13 +6,17 @@ echo   FaceTrack AI - Starting...
 echo  ====================================
 echo.
 
-REM -- Activate virtual environment
-if exist ".venv\Scripts\activate.bat" (
+REM -- Activate virtual environment (prefer .venv311 for OpenVINO support)
+if exist ".venv311\Scripts\activate.bat" (
+    call .venv311\Scripts\activate.bat
+    echo [OK] Using .venv311 (Python 3.11 + OpenVINO)
+) else if exist ".venv\Scripts\activate.bat" (
     call .venv\Scripts\activate.bat
+    echo [WARN] Using .venv (OpenVINO may not be available)
 ) else (
     echo [ERROR] Virtual environment not found.
-    echo Run: python -m venv .venv
-    echo Then: .venv\Scripts\pip install -r requirements.txt
+    echo Run: python -m venv .venv311
+    echo Then: .venv311\Scripts\pip install -r requirements.txt
     pause
     exit /b 1
 )

@@ -1,5 +1,6 @@
 # ── Python ────────────────────────────────────────────────────────────────────
 .venv/
+.venv311/
 __pycache__/
 *.py[cod]
 *.pyo
@@ -37,3 +38,5 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+.github/
