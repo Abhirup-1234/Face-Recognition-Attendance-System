@@ -11,6 +11,7 @@ Includes a robust reconnect watchdog for RTSP/USB cameras:
 import time
 import logging
 import threading
+import queue
 from collections import defaultdict
 from datetime import datetime
 
@@ -312,6 +313,186 @@ class CameraProcessor(threading.Thread):
             })
 
 
+# ── Push-camera processor (used in Colab / no-backend-camera environments) ────
+
+class PushCameraProcessor(threading.Thread):
+    """
+    Camera processor fed by HTTP-pushed JPEG frames instead of cv2.VideoCapture.
+
+    Used in Google Colab where the backend VM has no physical camera.  The
+    browser-side webcam is captured with JavaScript and each frame is POSTed
+    as raw JPEG bytes to /api/push_frame/<camera_id>.  This processor dequeues
+    those frames, runs face detection/recognition (on GPU via CUDA EP), encodes
+    the annotated result, and makes it available via get_jpeg() — exactly like
+    CameraProcessor, so the rest of the stack (streaming, SocketIO events,
+    attendance marking) works without any changes.
+    """
+
+    def __init__(self, camera_id: str, socketio=None):
+        super().__init__(daemon=True, name=f"push-cam-{camera_id}")
+        self.camera_id = camera_id
+        self.socketio  = socketio
+
+        self._engine     = FaceEngine()
+        self._stop_evt   = threading.Event()
+        self._frame_lock = threading.Lock()
+        self._latest_jpg: bytes       = b""
+        self._queue:      queue.Queue = queue.Queue(maxsize=2)
+
+        self._recognition_lock    = threading.Lock()
+        self._recognition_enabled = False
+
+        self._confirm_buf: dict = defaultdict(list)
+        self._last_marked: dict = {}
+        self._last_faces:  list = []
+
+        self.stats = {
+            "capture_fps":         0.0,
+            "stream_fps":          config.STREAM_FPS,
+            "faces_detected":      0,
+            "recognitions_today":  0,
+            "status":              "waiting",
+            "recognition_enabled": False,
+        }
+
+    # ── Public interface (mirrors CameraProcessor) ───────────────────────────
+
+    def push_frame(self, jpeg_bytes: bytes):
+        """Inject a JPEG frame from the HTTP push endpoint (thread-safe)."""
+        try:
+            self._queue.put_nowait(jpeg_bytes)
+        except queue.Full:
+            # Drop oldest frame and enqueue the fresh one
+            try:
+                self._queue.get_nowait()
+                self._queue.put_nowait(jpeg_bytes)
+            except Exception:
+                pass
+
+    def stop(self):
+        self._stop_evt.set()
+
+    def get_jpeg(self) -> bytes:
+        with self._frame_lock:
+            return self._latest_jpg
+
+    def set_recognition(self, enabled: bool):
+        with self._recognition_lock:
+            self._recognition_enabled = enabled
+            self.stats["recognition_enabled"] = enabled
+        if not enabled:
+            self._confirm_buf.clear()
+            self._last_faces = []
+        log.info("[%s] Recognition %s", self.camera_id, "ON" if enabled else "OFF")
+
+    @property
+    def recognition_enabled(self) -> bool:
+        with self._recognition_lock:
+            return self._recognition_enabled
+
+    # ── Internal helpers ────────────────────────────────────────────────────
+
+    def _emit_status(self, status: str):
+        self.stats["status"] = status
+        if self.socketio:
+            try:
+                self.socketio.emit("camera_status", {
+                    "camera_id": self.camera_id,
+                    "status":    status,
+                })
+            except Exception:
+                pass
+
+    def run(self):
+        self._emit_status("waiting")
+        fps_count   = 0
+        fps_ts      = time.time()
+        frame_count = 0
+
+        while not self._stop_evt.is_set():
+            try:
+                jpeg_bytes = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            arr   = np.frombuffer(jpeg_bytes, np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+
+            self._emit_status("running")
+            fps_count   += 1
+            frame_count += 1
+            now = time.time()
+            if now - fps_ts >= 3.0:
+                self.stats["capture_fps"] = round(fps_count / (now - fps_ts), 1)
+                fps_count = 0
+                fps_ts    = now
+
+            if not self.recognition_enabled:
+                self._last_faces = []
+                self.stats["faces_detected"] = 0
+                self._encode_frame(frame)
+                continue
+
+            if frame_count % config.PROCESS_EVERY_N != 0:
+                ann = FaceEngine.draw_results(frame, self._last_faces) if self._last_faces else frame
+                self._encode_frame(ann)
+                continue
+
+            faces      = self._engine.detect(frame)
+            identified = self._identify_and_mark(faces)
+            self._last_faces             = identified
+            self.stats["faces_detected"] = len(identified)
+            self._encode_frame(FaceEngine.draw_results(frame, identified))
+
+        self._emit_status("stopped")
+
+    def _identify_and_mark(self, faces):
+        identified = []
+        for face in faces:
+            sid, sim = self._engine.identify(face)
+            face.student_id   = sid
+            face.student_name = self._engine.get_student_name(sid) if sid else None
+            face.similarity   = sim
+            if sid and self._should_mark(sid, sim):
+                self._mark(face)
+                self.stats["recognitions_today"] += 1
+            identified.append(face)
+        return identified
+
+    def _should_mark(self, student_id: str, sim: float) -> bool:
+        buf = self._confirm_buf[student_id]
+        buf.append(True)
+        if len(buf) > config.CONFIRM_FRAMES: buf.pop(0)
+        if len(buf) < config.CONFIRM_FRAMES or not all(buf): return False
+        if self._last_marked.get(student_id): return False
+        if db.was_marked_today(student_id):
+            self._last_marked[student_id] = True; return False
+        return True
+
+    def _mark(self, face: FaceResult):
+        ok = db.mark_attendance(face.student_id, self.camera_id, face.similarity)
+        if not ok: return
+        self._last_marked[face.student_id] = True
+        self._confirm_buf[face.student_id] = []
+        log.info("[%s] Marked: %s | sim=%.3f", self.camera_id, face.student_name, face.similarity)
+        if self.socketio:
+            self.socketio.emit("attendance_marked", {
+                "camera_id":    self.camera_id,
+                "student_id":   face.student_id,
+                "student_name": face.student_name,
+                "confidence":   round(face.similarity, 3),
+                "timestamp":    datetime.now().strftime("%H:%M:%S"),
+            })
+
+    def _encode_frame(self, bgr: np.ndarray):
+        ret, jpg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 72])
+        if ret:
+            with self._frame_lock:
+                self._latest_jpg = jpg.tobytes()
+
+
 class CameraManager:
 
     def __init__(self, socketio=None):
@@ -324,7 +505,11 @@ class CameraManager:
 
     def start_camera(self, camera_id: str, source):
         self.stop_camera(camera_id)
-        proc = CameraProcessor(camera_id, source, self._socketio)
+        # "push://" source → PushCameraProcessor (Colab / no-backend-camera mode)
+        if isinstance(source, str) and source.startswith("push://"):
+            proc = PushCameraProcessor(camera_id, self._socketio)
+        else:
+            proc = CameraProcessor(camera_id, source, self._socketio)
         self._procs[camera_id] = proc
         proc.start()
 
@@ -336,6 +521,14 @@ class CameraManager:
     def stop_all(self):
         for cam_id in list(self._procs):
             self.stop_camera(cam_id)
+
+    def push_frame(self, camera_id: str, jpeg_bytes: bytes) -> bool:
+        """Forward a JPEG frame to a PushCameraProcessor (Colab mode only)."""
+        proc = self._procs.get(camera_id)
+        if proc and isinstance(proc, PushCameraProcessor):
+            proc.push_frame(jpeg_bytes)
+            return True
+        return False
 
     def get_jpeg(self, camera_id: str) -> bytes:
         proc = self._procs.get(camera_id)

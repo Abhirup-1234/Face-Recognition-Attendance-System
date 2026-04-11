@@ -403,6 +403,32 @@ def _register_routes(app: Flask, limiter=None):
             return jsonify({"ok": True, "enabled": enabled})
         return jsonify({"error": "Camera not running"}), 404
 
+    @app.route("/api/push_frame/<camera_id>", methods=["POST"])
+    def api_push_frame(camera_id):
+        """
+        Accept a raw JPEG frame pushed from a browser client.
+
+        Designed for Google Colab where the backend VM has no physical camera.
+        A JavaScript snippet in the Colab notebook captures the browser webcam
+        and POSTs each frame here as application/octet-stream.  The frame is
+        forwarded to the PushCameraProcessor queue, which runs face detection
+        and recognition on the Colab GPU — exactly like the live camera path.
+
+        No @login_required: the endpoint is ephemeral (random Cloudflare URL)
+        and is never reachable on the local PC (push:// cameras are only
+        configured inside the Colab notebook).
+        """
+        data = request.data
+        if not data and "frame" in request.files:
+            data = request.files["frame"].read()
+        if not data:
+            return jsonify({"error": "No frame data"}), 400
+        if camera_manager:
+            if camera_manager.push_frame(camera_id, data):
+                return jsonify({"ok": True}), 200
+            return jsonify({"error": "Camera not found or not a push camera"}), 404
+        return jsonify({"error": "Camera manager not ready"}), 503
+
     # ── Classes ────────────────────────────────────────────────────────────────
     @app.route("/api/classes", methods=["GET"])
     @login_required
