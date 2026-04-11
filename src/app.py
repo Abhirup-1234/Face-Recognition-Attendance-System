@@ -429,6 +429,207 @@ def _register_routes(app: Flask, limiter=None):
             return jsonify({"error": "Camera not found or not a push camera"}), 404
         return jsonify({"error": "Camera manager not ready"}), 503
 
+    @app.route("/api/preview_frame/<camera_id>", methods=["POST"])
+    def api_preview_frame(camera_id):
+        """
+        Accept a raw JPEG frame, run inline GPU face detection/identification,
+        and return JSON bounding-box data for the /colab-camera overlay.
+
+        Also pushes the frame to PushCameraProcessor (if present) so that
+        the confirmation buffer runs in the background for attendance marking.
+        ONNX Runtime's InferenceSession is thread-safe, so concurrent calls
+        from this route and the processor thread are safe.
+        """
+        import time as _t, numpy as _np, cv2 as _cv2
+
+        data = request.data
+        if not data:
+            return jsonify({"error": "No frame data"}), 400
+
+        # Push to queue for attendance marking (non-blocking)
+        if camera_manager:
+            camera_manager.push_frame(camera_id, data)
+
+        # Inline detection for immediate visual feedback
+        if engine is None:
+            return jsonify({"faces": [], "inference_ms": 0})
+
+        arr   = _np.frombuffer(data, _np.uint8)
+        frame = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
+        if frame is None:
+            return jsonify({"error": "Bad frame data"}), 400
+
+        t0    = _t.monotonic()
+        faces = engine.detect(frame)
+        face_data = []
+        for face in faces:
+            sid, sim = engine.identify(face)
+            name = engine.get_student_name(sid) if sid else None
+            x, y, w, h = face.bbox.astype(int).tolist()
+            face_data.append({
+                "bbox":       [x, y, w, h],
+                "name":       name or "Unknown",
+                "similarity": round(float(sim), 3),
+                "known":      sid is not None,
+            })
+        inference_ms = round((_t.monotonic() - t0) * 1000)
+
+        return jsonify({"faces": face_data, "inference_ms": inference_ms})
+
+    @app.route("/colab-camera")
+    @app.route("/colab-camera/<camera_id>")
+    def colab_camera(camera_id="CAM-COLAB"):
+        """
+        Standalone camera page for Google Colab testing.
+        Accessible at <cloudflare-tunnel-url>/colab-camera
+
+        Captures the browser webcam, POSTs frames to /api/preview_frame,
+        and draws GPU detection results as a canvas overlay on the live
+        video — so video is smooth (30fps local) while boxes update at ~5fps.
+        No MJPEG stream, no extra browser tabs needed.
+        """
+        page = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FaceTrack AI — Camera</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,sans-serif;
+     display:flex;flex-direction:column;align-items:center;padding:20px 12px;min-height:100vh}
+h1{color:#3fb950;font-size:22px;letter-spacing:.5px;margin-bottom:3px}
+.sub{color:#484f58;font-size:13px;margin-bottom:16px}
+.cam-wrap{position:relative;border-radius:10px;overflow:hidden;
+          box-shadow:0 0 0 2px #30363d,0 8px 32px rgba(0,0,0,.7)}
+video,canvas{display:block}
+canvas{position:absolute;top:0;left:0;pointer-events:none}
+.bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0}
+.chip{background:#161b22;border:1px solid #30363d;border-radius:20px;
+      padding:4px 14px;font-size:12px;color:#8b949e}
+.chip.ok{border-color:#3fb950;color:#56d364}
+.chip.err{border-color:#f85149;color:#ff7b72}
+.chip.inf{border-color:#388bfd;color:#79c0ff}
+.faces{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;
+       min-height:32px;align-items:center;margin:4px 0}
+.tag{border-radius:20px;padding:3px 12px;font-size:12px}
+.tag.known{background:#0d4429;color:#56d364;border:1px solid #1a7f37}
+.tag.unk{background:#3d0d0d;color:#ff7b72;border:1px solid #8b1a1a}
+a{color:#3fb950}
+.note{margin-top:18px;font-size:12px;color:#484f58;text-align:center;max-width:500px;line-height:1.6}
+</style>
+</head>
+<body>
+<h1>&#128247; FaceTrack AI</h1>
+<p class="sub">Live Camera &mdash; GPU Face Detection on Colab</p>
+
+<div class="cam-wrap">
+  <video id="vid" width="640" height="480" autoplay muted playsinline></video>
+  <canvas id="ovl" width="640" height="480"></canvas>
+</div>
+
+<div class="bar">
+  <div class="chip" id="s-chip">Starting camera&hellip;</div>
+  <div class="chip inf" id="i-chip">Inference: &mdash;</div>
+  <div class="chip" id="f-chip">Faces: 0</div>
+</div>
+<div class="faces" id="faces">
+  <span style="color:#484f58;font-size:12px">Waiting for first detection&hellip;</span>
+</div>
+
+<p class="note">
+  <b>Recognition is controlled from the <a href="/">main web UI</a>.</b><br>
+  Go to <a href="/">FaceTrack AI</a> &rarr; Cameras &rarr; Enable Recognition to mark attendance.<br>
+  This page streams your webcam to the Colab GPU and shows detection results live.
+</p>
+
+<script>
+(async () => {
+  const CAM = '"""  + camera_id + r"""';
+  const vid    = document.getElementById('vid');
+  const ovl    = document.getElementById('ovl');
+  const octx   = ovl.getContext('2d');
+  const cap    = document.createElement('canvas');
+  cap.width = 640; cap.height = 480;
+  const cctx   = cap.getContext('2d');
+  const sChip  = document.getElementById('s-chip');
+  const iChip  = document.getElementById('i-chip');
+  const fChip  = document.getElementById('f-chip');
+  const facesEl = document.getElementById('faces');
+
+  function drawFaces(faces) {
+    octx.clearRect(0, 0, 640, 480);
+    facesEl.innerHTML = '';
+    fChip.textContent = 'Faces: ' + faces.length;
+    if (!faces.length) {
+      facesEl.innerHTML = '<span style="color:#484f58;font-size:12px">No faces detected</span>';
+      return;
+    }
+    for (const f of faces) {
+      const [x, y, w, h] = f.bbox;
+      const col   = f.known ? '#3fb950' : '#f85149';
+      const pct   = f.similarity ? ' ' + Math.round(f.similarity * 100) + '%' : '';
+      const label = f.name + pct;
+
+      // box
+      octx.strokeStyle = col; octx.lineWidth = 2;
+      octx.strokeRect(x, y, w, h);
+
+      // label background
+      octx.font = 'bold 13px system-ui';
+      const tw = octx.measureText(label).width;
+      octx.fillStyle = col;
+      octx.fillRect(x, Math.max(0, y - 22), tw + 10, 22);
+      octx.fillStyle = '#0d1117';
+      octx.fillText(label, x + 5, Math.max(14, y - 6));
+
+      // tag below video
+      const t = document.createElement('div');
+      t.className = 'tag ' + (f.known ? 'known' : 'unk');
+      t.textContent = label;
+      facesEl.appendChild(t);
+    }
+  }
+
+  async function send() {
+    cctx.drawImage(vid, 0, 0, 640, 480);
+    cap.toBlob(async (blob) => {
+      const t0 = performance.now();
+      try {
+        const r = await fetch('/api/preview_frame/' + CAM, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: blob,
+        });
+        if (r.ok) {
+          const d = await r.json();
+          drawFaces(d.faces || []);
+          iChip.textContent = 'Inference: ' + d.inference_ms + '\u2009ms';
+        }
+      } catch (e) { console.warn(e); }
+      // Self-pacing: aim for 5fps (200ms cycle total)
+      const rtt = performance.now() - t0;
+      setTimeout(send, Math.max(50, 200 - rtt));
+    }, 'image/jpeg', 0.82);
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(
+      { video: { width: 640, height: 480, facingMode: 'user' } });
+    vid.srcObject = stream;
+    sChip.textContent = '\u2705 Camera active \u2014 GPU detection running';
+    sChip.className = 'chip ok';
+    send();
+  } catch (e) {
+    sChip.textContent = '\u274c ' + e.message;
+    sChip.className = 'chip err';
+  }
+})();
+</script>
+</body>
+</html>"""
+        return page, 200, {"Content-Type": "text/html; charset=utf-8"}
+
     # ── Classes ────────────────────────────────────────────────────────────────
     @app.route("/api/classes", methods=["GET"])
     @login_required
