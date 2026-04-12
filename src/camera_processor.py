@@ -544,13 +544,18 @@ class CameraManager:
     def get_stats(self) -> dict:
         stats = {}
         for cam_id in config.CAMERAS:
+            source = config.CAMERAS.get(cam_id)
+            is_push_source = isinstance(source, str) and source.startswith("push://")
             if cam_id in self._procs:
-                stats[cam_id] = self._procs[cam_id].stats
+                proc_stats = dict(self._procs[cam_id].stats)
+                proc_stats["is_push_source"] = is_push_source
+                stats[cam_id] = proc_stats
             else:
                 stats[cam_id] = {
                     "capture_fps": 0.0, "stream_fps": config.STREAM_FPS,
                     "faces_detected": 0, "recognitions_today": 0,
                     "status": "stopped", "recognition_enabled": False,
+                    "is_push_source": is_push_source,
                 }
         return stats
 

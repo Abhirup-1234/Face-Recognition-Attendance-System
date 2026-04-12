@@ -45,6 +45,134 @@ function CameraFeed({ camId }) {
   )
 }
 
+function ColabPushCameraFeed({ camId }) {
+  const vidRef = useRef(null)
+  const ovlRef = useRef(null)
+  const capRef = useRef(null)
+  const runRef = useRef(false)
+  const timerRef = useRef(null)
+  const [err, setErr] = useState('')
+  const [inferenceMs, setInferenceMs] = useState(null)
+  const [facesCount, setFacesCount] = useState(0)
+
+  const drawFaces = useCallback((faces) => {
+    const canvas = ovlRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    const w = canvas.width
+    const h = canvas.height
+    ctx.clearRect(0, 0, w, h)
+    for (const f of faces || []) {
+      const [x, y, bw, bh] = f.bbox || [0, 0, 0, 0]
+      const col = f.known ? '#3fb950' : '#f85149'
+      const pct = f.similarity ? ` ${Math.round(f.similarity * 100)}%` : ''
+      const label = `${f.name || 'Unknown'}${pct}`
+      ctx.strokeStyle = col
+      ctx.lineWidth = 2
+      ctx.strokeRect(x, y, bw, bh)
+      ctx.font = 'bold 13px system-ui'
+      const tw = ctx.measureText(label).width
+      ctx.fillStyle = col
+      ctx.fillRect(x, Math.max(0, y - 22), tw + 10, 22)
+      ctx.fillStyle = '#0d1117'
+      ctx.fillText(label, x + 5, Math.max(14, y - 6))
+    }
+  }, [])
+
+  useEffect(() => {
+    runRef.current = true
+    const TARGET_PREVIEW_FPS = 15
+    const TARGET_CYCLE_MS = Math.round(1000 / TARGET_PREVIEW_FPS)
+
+    const sendFrame = async () => {
+      if (!runRef.current) return
+      const vid = vidRef.current
+      const cap = capRef.current
+      if (!vid || !cap || vid.readyState < 2) {
+        timerRef.current = setTimeout(sendFrame, 120)
+        return
+      }
+      const cctx = cap.getContext('2d')
+      cctx.drawImage(vid, 0, 0, cap.width, cap.height)
+      const t0 = performance.now()
+      cap.toBlob(async (blob) => {
+        if (!runRef.current || !blob) return
+        try {
+          const resp = await fetch(`/api/preview_frame/${encodeURIComponent(camId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: blob,
+            credentials: 'include',
+          })
+          if (resp.ok) {
+            const data = await resp.json()
+            const faces = data.faces || []
+            drawFaces(faces)
+            setFacesCount(faces.length)
+            setInferenceMs(data.inference_ms ?? null)
+            setErr('')
+          } else {
+            setErr(`Preview failed (${resp.status})`)
+          }
+        } catch {
+          setErr('Preview request failed')
+        }
+        const rtt = performance.now() - t0
+        timerRef.current = setTimeout(sendFrame, Math.max(1, TARGET_CYCLE_MS - rtt))
+      }, 'image/jpeg', 0.70)
+    }
+
+    const start = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user',
+            frameRate: { ideal: 30, max: 30 },
+          },
+        })
+        if (!runRef.current) {
+          stream.getTracks().forEach(t => t.stop())
+          return
+        }
+        const vid = vidRef.current
+        if (!vid) return
+        vid.srcObject = stream
+        setErr('')
+        await vid.play().catch(() => {})
+        sendFrame()
+      } catch (e) {
+        setErr(e?.message || 'Camera access denied')
+      }
+    }
+
+    start()
+    return () => {
+      runRef.current = false
+      if (timerRef.current) clearTimeout(timerRef.current)
+      const vid = vidRef.current
+      if (vid && vid.srcObject) {
+        vid.srcObject.getTracks().forEach(t => t.stop())
+        vid.srcObject = null
+      }
+    }
+  }, [camId, drawFaces])
+
+  return (
+    <div className="vidbox camera-live-box" style={{ borderRadius: 0, border: 'none' }}>
+      <video ref={vidRef} className="camera-live-video" autoPlay muted playsInline />
+      <canvas ref={ovlRef} className="camera-live-ovl" width={640} height={480} />
+      <canvas ref={capRef} width={640} height={480} style={{ display: 'none' }} />
+      <div className="camera-live-metrics">
+        <span>Faces: {facesCount}</span>
+        <span>Inference: {inferenceMs == null ? '—' : `${inferenceMs} ms`}</span>
+      </div>
+      {err && <div className="camera-live-err">{err}</div>}
+    </div>
+  )
+}
+
 export default function Cameras() {
   const [camStats, setCamStats] = useState({})
   const [feed,     setFeed]     = useState([])
@@ -162,7 +290,7 @@ export default function Cameras() {
 
               {/* Video feed */}
               {running ? (
-                <CameraFeed camId={camId} />
+                s.is_push_source ? <ColabPushCameraFeed camId={camId} /> : <CameraFeed camId={camId} />
               ) : reconnecting ? (
                 <div className="vidbox" style={{ borderRadius:0, border:'none' }}>
                   <div className="vid-err" style={{ flexDirection: 'column', gap: 12 }}>
