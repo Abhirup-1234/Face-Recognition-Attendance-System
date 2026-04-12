@@ -485,7 +485,8 @@ def _register_routes(app: Flask, limiter=None):
 
         Captures the browser webcam, POSTs frames to /api/preview_frame,
         and draws GPU detection results as a canvas overlay on the live
-        video — so video is smooth (30fps local) while boxes update at ~5fps.
+        video — so video is smooth (30fps local) while boxes update at a
+        higher cadence (target ~12fps, subject to inference/network latency).
         No MJPEG stream, no extra browser tabs needed.
         """
         page = r"""<!DOCTYPE html>
@@ -556,6 +557,8 @@ a{color:#3fb950}
   const iChip  = document.getElementById('i-chip');
   const fChip  = document.getElementById('f-chip');
   const facesEl = document.getElementById('faces');
+  const TARGET_PREVIEW_FPS = 12;
+  const TARGET_CYCLE_MS = Math.round(1000 / TARGET_PREVIEW_FPS);
 
   function drawFaces(faces) {
     octx.clearRect(0, 0, 640, 480);
@@ -604,18 +607,26 @@ a{color:#3fb950}
         if (r.ok) {
           const d = await r.json();
           drawFaces(d.faces || []);
-          iChip.textContent = 'Inference: ' + d.inference_ms + '\u2009ms';
+          iChip.textContent = 'Inference: ' + d.inference_ms + '\u2009ms \u00b7 Target: ' + TARGET_PREVIEW_FPS + 'fps';
         }
       } catch (e) { console.warn(e); }
-      // Self-pacing: aim for 5fps (200ms cycle total)
+      // Self-pacing: keep requests frequent while avoiding burst backlog.
       const rtt = performance.now() - t0;
-      setTimeout(send, Math.max(50, 200 - rtt));
-    }, 'image/jpeg', 0.82);
+      setTimeout(send, Math.max(1, TARGET_CYCLE_MS - rtt));
+    }, 'image/jpeg', 0.72);
   }
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia(
-      { video: { width: 640, height: 480, facingMode: 'user' } });
+      {
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user',
+          frameRate: { ideal: 30, max: 30 },
+        },
+      },
+    );
     vid.srcObject = stream;
     sChip.textContent = '\u2705 Camera active \u2014 GPU detection running';
     sChip.className = 'chip ok';
