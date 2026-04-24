@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useEnrollQueue } from '../context/EnrollQueueContext'
 import { useToast } from '../context/ToastContext'
-import { students as studentsApi, classes as classesApi, streams as streamsApi, sections as sectionsApi } from '../api'
+import { classes as classesApi, streams as streamsApi, sections as sectionsApi } from '../api'
+
 
 const GUIDE_STEPS = [
   { id:'gs1', label:'1. Face forward',   count:'5 shots', until:5  },
@@ -33,8 +34,6 @@ export default function Enroll() {
   const [classList,   setClassList]   = useState([])
   const [streamList,  setStreamList]  = useState([])
   const [sectionList, setSectionList] = useState([])
-  const [studentList, setStudentList] = useState([])
-  const [search,      setSearch]      = useState('')
 
   const videoRef  = useRef(null)
   const canvasRef = useRef(null)
@@ -44,7 +43,6 @@ export default function Enroll() {
 
   useEffect(() => {
     classesApi.list().then(r => r?.ok && setClassList(r.data))
-    studentsApi.list().then(r => r?.ok && setStudentList(r.data))
   }, [])
 
   // When class changes: load streams (XI/XII only), reset stream/section
@@ -77,14 +75,7 @@ export default function Enroll() {
     })
   }, [classVal, streamVal])
 
-  // Auto-refresh enrolled list when queue shrinks
-  const prevQueueLen = useRef(0)
-  useEffect(() => { prevQueueLen.current = 0 }, [])
-  useEffect(() => {
-    if (queue.length < prevQueueLen.current)
-      studentsApi.list().then(r => { if (r?.ok) setStudentList(r.data) })
-    prevQueueLen.current = queue.length
-  }, [queue.length]) // eslint-disable-line
+
 
   // ── Camera ────────────────────────────────────────────────────────────────
   const stopCam = useCallback(() => {
@@ -159,17 +150,7 @@ export default function Enroll() {
     toast('Added to enrollment queue!','success',2500)
   }
 
-  const handleRemoveStudent = async (sid, sname) => {
-    if (!confirm(`Remove ${sname} (${sid})?`)) return
-    const res = await studentsApi.remove(sid)
-    if (res?.data?.ok) { toast(`${sname} removed.`,'success'); setStudentList(p=>p.filter(s=>s.student_id!==sid)) }
-  }
 
-  const filtered = studentList.filter(s => {
-    if (!search) return true
-    const q = search.toLowerCase()
-    return s.name?.toLowerCase().includes(q) || s.student_id?.toLowerCase().includes(q) || s.class_name?.toLowerCase().includes(q)
-  })
 
   const needsStream = streamList.length > 0
 
@@ -308,6 +289,9 @@ export default function Enroll() {
               <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>Drop photos here or click to browse</div>
               <div style={{fontSize:12.5,color:'var(--text3)'}}>JPEG / PNG · 10+ photos recommended</div>
             </div>
+            <div style={{paddingTop:16}}>
+              <button className="btn btn-primary btn-full" onClick={handleAddToQueue}>+ Add to Enrollment Queue</button>
+            </div>
             {upFiles.length>0 && (
               <div style={{marginTop:12}}>
                 <div className="flex-sb" style={{marginBottom:8}}>
@@ -324,48 +308,68 @@ export default function Enroll() {
                 </div>
               </div>
             )}
-            <div style={{paddingTop:16}}>
-              <button className="btn btn-primary btn-full" onClick={handleAddToQueue}>+ Add to Enrollment Queue</button>
-            </div>
           </div>
         )}
       </div>
 
-      {/* ── Enrolled students ─────────────────────────────────────────────── */}
+      {/* ── Enrollment Queue (inline) ─────────────────────────────────────── */}
       <div style={{display:'flex',flexDirection:'column',gap:20}}>
         <div className="card">
-          <div className="card-title flex-sb">
-            <span><span className="card-icon">👥</span> Enrolled Students ({studentList.length})</span>
-            <input className="form-input" style={{maxWidth:180,padding:'6px 10px',fontSize:12.5}}
-              placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          <div className="card-title">
+            <span className="card-icon">⏳</span>
+            Enrollment Queue
+            {queue.length > 0 && (
+              <span className="badge badge-orange" style={{marginLeft:6}}>{queue.length} pending</span>
+            )}
           </div>
-          <div className="table-wrap" style={{maxHeight:460,overflowY:'auto'}}>
-            <table>
-              <thead><tr><th>Name</th><th>Class</th><th>Stream</th><th>Sec</th><th>Roll</th><th>Enrolled</th><th></th></tr></thead>
-              <tbody>
-                {filtered.length===0 ? <tr><td colSpan={7} className="empty" style={{padding:32}}>No students enrolled yet.</td></tr>
-                  : filtered.map(s=>(
-                    <tr key={s.student_id}>
-                      <td>
-                        <div className="flex">
-                          <div className="log-av" style={{width:30,height:30,fontSize:11}}>{(s.name||'XX').slice(0,2).toUpperCase()}</div>
-                          <div>
-                            <div className="td-name">{s.name}</div>
-                            <div style={{fontSize:11.5,color:'var(--text3)',fontFamily:'Space Mono,monospace'}}>{s.student_id}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td><span className="badge badge-blue">{s.class_name}</span></td>
-                      <td style={{fontSize:12,color:'var(--text3)'}}>{s.stream||'—'}</td>
-                      <td style={{fontFamily:'Space Mono,monospace',fontSize:12}}>{s.section}</td>
-                      <td className="mono">{s.roll_no}</td>
-                      <td style={{fontSize:12,color:'var(--text3)'}}>{(s.enrolled_at||'').slice(0,10)}</td>
-                      <td><button className="btn btn-danger btn-sm" onClick={()=>handleRemoveStudent(s.student_id,s.name)}>Remove</button></td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+          {queue.length === 0 ? (
+            <div className="empty">
+              <div className="empty-icon">📭</div>
+              <div className="empty-title">Queue is empty</div>
+              <div className="empty-sub">Add students using the form on the left to start enrolling.</div>
+            </div>
+          ) : (
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {queue.map((item, i) => (
+                <div key={item.id} style={{
+                  display:'flex', alignItems:'center', gap:12,
+                  padding:'12px 14px',
+                  background: i===0 ? 'rgba(37,99,235,.08)' : 'rgba(255,255,255,.02)',
+                  border: `1px solid ${i===0 ? 'rgba(37,99,235,.25)' : 'var(--border)'}`,
+                  borderRadius:'var(--radius-sm)',
+                  transition:'all .2s',
+                }}>
+                  <div style={{
+                    width:34, height:34, borderRadius:'50%', flexShrink:0,
+                    background: i===0
+                      ? 'linear-gradient(135deg,var(--nps-blue),var(--nps-blue2))'
+                      : 'rgba(255,255,255,.06)',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                    fontSize:13, fontWeight:800,
+                    boxShadow: i===0 ? '0 2px 10px rgba(37,99,235,.3)' : 'none',
+                  }}>
+                    {i===0 ? '↻' : i+1}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:13.5,fontWeight:600,color:'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                      {item.meta.name}
+                    </div>
+                    <div style={{fontSize:11.5,color:'var(--text3)',marginTop:2,fontFamily:'Space Mono,monospace'}}>
+                      {item.meta.student_id} · {item.meta.class_name}
+                      {item.meta.stream ? ` · ${item.meta.stream}` : ''}
+                      {` · Sec ${item.meta.section} · Roll ${item.meta.roll_no}`}
+                    </div>
+                    <div style={{fontSize:11,color:'var(--text3)',marginTop:2}}>
+                      {(item.blobs?.length||0)+(item.files?.length||0)} photo(s)
+                    </div>
+                  </div>
+                  <span className={`badge ${i===0 ? 'badge-blue' : 'badge-gray'}`} style={{flexShrink:0}}>
+                    {i===0 ? 'Processing…' : 'Queued'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -106,20 +106,6 @@ REC_THRESHOLD          = 0.4
 EMBEDDINGS_PER_STUDENT = 20
 CONFIRM_FRAMES         = 3
 
-# ── Inference Provider (OpenVINO) ──────────────────────────────────────────────
-# NOTE: GPU (Intel iGPU) has been disabled.
-# The buffalo_l (RetinaFace + ArcFace) ONNX models trigger two known OpenVINO
-# GPU-backend kernel errors:
-#   • "Input VX intersects with VY" — register-allocation bug in CISA GPU backend
-#   • "Explicit input N must not follow an implicit input 0" — I/O ordering bug
-# These cause silent GPU→CPU fallback with extra overhead, making GPU SLOWER than
-# plain CPU. OpenVINO CPU (with AVX/VNNI optimisations) outperforms ONNX CPU
-# and is the correct backend for this hardware.
-OPENVINO_DEVICE_PRIORITY = ["CPU"]   # GPU removed — kernel errors on buffalo_l
-# 0 = auto (use all available cores); set >0 to reserve cores for Flask/cameras
-OPENVINO_NUM_THREADS     = 0
-# Enable OpenVINO model caching — speeds up subsequent launches dramatically
-OPENVINO_CACHE_DIR       = str(DATA_DIR / "openvino_cache")
 
 # ── Preprocessing ──────────────────────────────────────────────────────────────
 ENABLE_CLAHE     = True

@@ -7,17 +7,17 @@ const STREAM_CLASSES = new Set(['XI','XII'])
 const FIXED_STREAMS  = ['Science','Commerce','Humanities']
 
 export default function Manage() {
-  const [tab, setTab] = useState('classes')
+  const [tab, setTab] = useState('students')
   return (
     <div>
       <div className="tabbar" style={{maxWidth:580,marginBottom:20}}>
+        <button className={`tabbtn${tab==='students'?' active':''}`} onClick={()=>setTab('students')}>◊ Students</button>
         <button className={`tabbtn${tab==='classes'?' active':''}`} onClick={()=>setTab('classes')}>⌾ Classes & Sections</button>
         <button className={`tabbtn${tab==='cameras'?' active':''}`} onClick={()=>setTab('cameras')}>📷 Camera Assignments</button>
-        <button className={`tabbtn${tab==='students'?' active':''}`} onClick={()=>setTab('students')}>◊ Students</button>
       </div>
+      {tab==='students' && <StudentsTab/>}
       {tab==='classes'  && <ClassesTab/>}
       {tab==='cameras'  && <CamerasTab/>}
-      {tab==='students' && <StudentsTab/>}
     </div>
   )
 }

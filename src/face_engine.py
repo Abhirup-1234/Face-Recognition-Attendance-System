@@ -106,16 +106,12 @@ class FaceEngine:
                 "Run: pip install insightface onnxruntime"
             )
 
-        # ── Build provider list with OpenVINO auto-detection ──────────────
-        providers = self._select_providers()
-        log.info("ONNX providers (requested): %s", [p if isinstance(p, str) else p[0] for p in providers])
-
         # buffalo_l pack:
         #   det_10g.onnx     -> RetinaFace detector
         #   w600k_r50.onnx   -> ArcFace ResNet50 recognizer (512-d embeddings)
         self._app = FaceAnalysis(
             name="buffalo_l",
-            providers=providers,
+            providers=["CPUExecutionProvider"],
         )
         self._app.prepare(
             ctx_id=0,
@@ -126,156 +122,7 @@ class FaceEngine:
         self._store:         EmbeddingStore = EmbeddingStore()
         self._student_names: dict           = {}
         self._initialized = True
-        log.info("FaceEngine ready — RetinaFace + ArcFace loaded.")
-
-    # ── Provider selection ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _select_providers():
-        """
-        Build the best provider list by trying OpenVINO devices in priority
-        order (GPU → CPU) with a quick validation, then falling back to the
-        plain ONNX CPUExecutionProvider if OpenVINO is unavailable.
-        """
-        import os, sys
-        import onnxruntime as ort
-
-        # ── Windows DLL fix: add OpenVINO libs dir to DLL search path ─────
-        # onnxruntime-openvino needs openvino.dll which lives inside the
-        # openvino Python package's libs/ directory.
-        try:
-            import openvino as _ov
-            ov_libs = os.path.join(os.path.dirname(_ov.__file__), "libs")
-            if os.path.isdir(ov_libs):
-                if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-                    os.add_dll_directory(ov_libs)
-                # Also add to PATH as a fallback for older mechanisms
-                if ov_libs not in os.environ.get("PATH", ""):
-                    os.environ["PATH"] = ov_libs + os.pathsep + os.environ.get("PATH", "")
-                log.info("Added OpenVINO DLL path: %s", ov_libs)
-        except ImportError:
-            log.warning("openvino package not installed — OpenVINO EP will not be available.")
-            return ["CPUExecutionProvider"]
-
-        available = ort.get_available_providers()
-        log.info("ONNX Runtime %s — available EPs: %s", ort.__version__, available)
-
-        if "OpenVINOExecutionProvider" not in available:
-            log.warning("OpenVINOExecutionProvider not available — using CPUExecutionProvider.")
-            return ["CPUExecutionProvider"]
-
-        # Ensure the cache directory exists
-        cache_dir = config.OPENVINO_CACHE_DIR
-        Path(cache_dir).mkdir(parents=True, exist_ok=True)
-
-        # Try each device in priority order
-        for device in config.OPENVINO_DEVICE_PRIORITY:
-            provider_opts = {
-                "device_type": device,
-                "cache_dir":   cache_dir,
-            }
-            if config.OPENVINO_NUM_THREADS > 0 and device == "CPU":
-                provider_opts["num_of_threads"] = str(config.OPENVINO_NUM_THREADS)
-
-            provider_tuple = ("OpenVINOExecutionProvider", provider_opts)
-
-            if FaceEngine._validate_provider(provider_tuple, device):
-                log.info("✓ OpenVINO %s device validated successfully.", device)
-                return [provider_tuple, "CPUExecutionProvider"]
-            else:
-                log.warning("✗ OpenVINO %s device failed validation — trying next.", device)
-
-        # All OpenVINO devices failed — fall back
-        log.warning("All OpenVINO devices failed — falling back to CPUExecutionProvider.")
-        return ["CPUExecutionProvider"]
-
-    # Known OpenVINO GPU-backend CISA kernel error signatures.
-    # These appear in stderr/logs when buffalo_l models run on the iGPU.
-    _OPENVINO_GPU_FATAL_ERRORS = (
-        "KERNEL HEADER ERRORS FOUND",
-        "intersects with",
-        "Explicit input",
-        "must not follow an implicit input",
-        "Error in CISA routine",
-    )
-
-    @staticmethod
-    def _validate_provider(provider_tuple, device: str) -> bool:
-        """
-        Run a dummy inference to verify the provider works at runtime.
-
-        For GPU devices we also intercept stderr to catch the silent OpenVINO
-        GPU-backend CISA kernel errors that surface when the real buffalo_l
-        models are loaded.  A tiny Add-graph passes even on a broken GPU driver,
-        so we use a slightly larger Conv graph to stress the kernel compiler
-        while also monitoring error output.
-        """
-        import io, sys, contextlib
-        import numpy as _np
-        import onnxruntime as ort
-        from onnxruntime import InferenceSession
-
-        log.info("  Testing OpenVINO %s device...", device)
-
-        try:
-            import onnx
-            from onnx import helper, TensorProto, numpy_helper
-
-            # ── Build a Conv graph (more representative than Add) ─────────
-            # Input: [1, 1, 8, 8]  Weight: [1, 1, 3, 3]  Output: [1, 1, 6, 6]
-            X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 1, 8, 8])
-            Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 1, 6, 6])
-            W_data = _np.ones((1, 1, 3, 3), dtype=_np.float32)
-            W_init = numpy_helper.from_array(W_data, name="W")
-            node   = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3])
-            graph  = helper.make_graph([node], "conv_test", [X], [Y], [W_init])
-            model  = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-            model_bytes = model.SerializeToString()
-
-            # ── Capture stderr to detect silent GPU kernel errors ─────────
-            stderr_capture = io.StringIO()
-            try:
-                with contextlib.redirect_stderr(stderr_capture):
-                    sess = InferenceSession(
-                        model_bytes,
-                        providers=[provider_tuple, "CPUExecutionProvider"],
-                    )
-                    _ = sess.run(None, {"X": _np.ones((1, 1, 8, 8), dtype=_np.float32)})
-                    active = sess.get_providers()
-            except Exception as e:
-                log.warning("  OpenVINO %s session error: %s", device, e)
-                return False
-
-            captured = stderr_capture.getvalue()
-            if any(sig in captured for sig in FaceEngine._OPENVINO_GPU_FATAL_ERRORS):
-                log.warning(
-                    "  OpenVINO %s rejected: GPU kernel errors detected in stderr.\n"
-                    "  (buffalo_l ONNX models are incompatible with the iGPU backend — "
-                    "using OpenVINO CPU instead, which is faster on this hardware.)",
-                    device,
-                )
-                return False
-
-            log.info("  Active providers after test: %s", active)
-            return "OpenVINOExecutionProvider" in active
-
-        except ImportError:
-            # onnx not installed — do minimal check with just the Add graph
-            log.info("  onnx not available; performing lightweight EP check.")
-            try:
-                # At minimum just verify the EP can be listed as active
-                available = ort.get_available_providers()
-                ok = "OpenVINOExecutionProvider" in available
-                if not ok:
-                    log.warning("  OpenVINO %s: EP not in available providers.", device)
-                return ok
-            except Exception as e:
-                log.warning("  OpenVINO %s lightweight check failed: %s", device, e)
-                return False
-
-        except Exception as e:
-            log.warning("  OpenVINO %s validation failed: %s", device, e)
-            return False
+        log.info("FaceEngine ready — RetinaFace + ArcFace loaded (CPUExecutionProvider).")
 
     # ── Enrollment ──────────────────────────────────────────────────────────────
 
