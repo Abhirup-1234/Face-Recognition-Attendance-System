@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useEnrollQueue } from '../context/EnrollQueueContext'
 import { useToast } from '../context/ToastContext'
-import { classes as classesApi, streams as streamsApi, sections as sectionsApi } from '../api'
+import { classes as classesApi, streams as streamsApi, sections as sectionsApi, students as studentsApi } from '../api'
 
 
 const GUIDE_STEPS = [
@@ -38,7 +38,7 @@ export default function Enroll() {
   const videoRef  = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
-  const { addToQueue, queue } = useEnrollQueue()
+  const { addToQueue, removeFromQueue, queue, current, progress } = useEnrollQueue()
   const toast = useToast()
 
   useEffect(() => {
@@ -330,44 +330,86 @@ export default function Enroll() {
             </div>
           ) : (
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {queue.map((item, i) => (
-                <div key={item.id} style={{
-                  display:'flex', alignItems:'center', gap:12,
-                  padding:'12px 14px',
-                  background: i===0 ? 'rgba(37,99,235,.08)' : 'rgba(255,255,255,.02)',
-                  border: `1px solid ${i===0 ? 'rgba(37,99,235,.25)' : 'var(--border)'}`,
-                  borderRadius:'var(--radius-sm)',
-                  transition:'all .2s',
-                }}>
-                  <div style={{
-                    width:34, height:34, borderRadius:'50%', flexShrink:0,
-                    background: i===0
-                      ? 'linear-gradient(135deg,var(--nps-blue),var(--nps-blue2))'
-                      : 'rgba(255,255,255,.06)',
-                    display:'flex', alignItems:'center', justifyContent:'center',
-                    fontSize:13, fontWeight:800,
-                    boxShadow: i===0 ? '0 2px 10px rgba(37,99,235,.3)' : 'none',
+              {queue.map((item, i) => {
+                const isProcessing = i === 0 && current
+                const photoUrl = item.blobs?.[0]
+                  ? URL.createObjectURL(item.blobs[0])
+                  : item.files?.[0]
+                    ? URL.createObjectURL(item.files[0])
+                    : null
+                return (
+                  <div key={item.id} style={{
+                    display:'flex', alignItems:'center', gap:12,
+                    padding:'12px 14px',
+                    background: isProcessing ? 'rgba(37,99,235,.08)' : 'rgba(255,255,255,.02)',
+                    border: `1px solid ${isProcessing ? 'rgba(37,99,235,.25)' : 'var(--border)'}`,
+                    borderRadius:'var(--radius-sm)',
+                    transition:'all .2s',
                   }}>
-                    {i===0 ? '↻' : i+1}
+                    {/* Avatar: photo or number */}
+                    <div style={{
+                      width:34, height:34, borderRadius:'50%', flexShrink:0,
+                      overflow:'hidden',
+                      background: isProcessing
+                        ? 'linear-gradient(135deg,var(--nps-blue),var(--nps-blue2))'
+                        : 'rgba(255,255,255,.06)',
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      fontSize:13, fontWeight:800,
+                      boxShadow: isProcessing ? '0 2px 10px rgba(37,99,235,.3)' : 'none',
+                    }}>
+                      {photoUrl ? (
+                        <img src={photoUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} />
+                      ) : (
+                        i + 1
+                      )}
+                    </div>
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={{fontSize:13.5,fontWeight:600,color:'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                        {item.meta.name}
+                      </div>
+                      <div style={{fontSize:11.5,color:'var(--text3)',marginTop:2,fontFamily:'Space Mono,monospace'}}>
+                        {item.meta.student_id} · {item.meta.class_name}
+                        {item.meta.stream ? ` · ${item.meta.stream}` : ''}
+                        {` · Sec ${item.meta.section} · Roll ${item.meta.roll_no}`}
+                      </div>
+                      {isProcessing && (
+                        <div style={{marginTop:6}}>
+                          <div style={{height:3,borderRadius:999,background:'var(--border)',overflow:'hidden'}}>
+                            <div style={{
+                              height:'100%',
+                              width:`${progress}%`,
+                              background:'linear-gradient(90deg,var(--accent),var(--nps-blue,var(--accent)))',
+                              borderRadius:999,
+                              transition:'width .3s ease',
+                            }}/>
+                          </div>
+                          <div style={{fontSize:10.5,color:'var(--text3)',marginTop:2}}>{Math.round(progress)}%</div>
+                        </div>
+                      )}
+                    </div>
+                    <span className={`badge ${isProcessing ? 'badge-blue' : 'badge-gray'}`} style={{flexShrink:0}}>
+                      {isProcessing ? 'Processing…' : 'Queued'}
+                    </span>
+                    {/* Cancel button — hidden while item is processing */}
+                    {!isProcessing && (
+                      <button
+                        onClick={() => removeFromQueue(item.id)}
+                        title="Cancel enrollment"
+                        style={{
+                          flexShrink:0, width:26, height:26, borderRadius:'50%',
+                          background:'rgba(239,68,68,.12)',
+                          border:'1px solid rgba(239,68,68,.25)',
+                          color:'var(--danger)', fontSize:14, fontWeight:700,
+                          cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
+                          transition:'all .15s', lineHeight:1,
+                        }}
+                        onMouseOver={e=>{e.currentTarget.style.background='rgba(239,68,68,.25)'}}
+                        onMouseOut={e=>{e.currentTarget.style.background='rgba(239,68,68,.12)'}}
+                      >×</button>
+                    )}
                   </div>
-                  <div style={{flex:1, minWidth:0}}>
-                    <div style={{fontSize:13.5,fontWeight:600,color:'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
-                      {item.meta.name}
-                    </div>
-                    <div style={{fontSize:11.5,color:'var(--text3)',marginTop:2,fontFamily:'Space Mono,monospace'}}>
-                      {item.meta.student_id} · {item.meta.class_name}
-                      {item.meta.stream ? ` · ${item.meta.stream}` : ''}
-                      {` · Sec ${item.meta.section} · Roll ${item.meta.roll_no}`}
-                    </div>
-                    <div style={{fontSize:11,color:'var(--text3)',marginTop:2}}>
-                      {(item.blobs?.length||0)+(item.files?.length||0)} photo(s)
-                    </div>
-                  </div>
-                  <span className={`badge ${i===0 ? 'badge-blue' : 'badge-gray'}`} style={{flexShrink:0}}>
-                    {i===0 ? 'Processing…' : 'Queued'}
-                  </span>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

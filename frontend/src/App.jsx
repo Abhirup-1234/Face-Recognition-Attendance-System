@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { useSocket } from './context/SocketContext'
 import Layout    from './components/Layout'
 import Login     from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -16,7 +17,7 @@ export default function App() {
   const [auth,     setAuth]     = useState(AUTH.CHECKING)
   const [enrolled, setEnrolled] = useState(0)
   const location  = useLocation()
-  const navigate  = useNavigate()
+  const { socket } = useSocket()
 
   // Check auth on mount and on navigation
   useEffect(() => {
@@ -31,6 +32,19 @@ export default function App() {
       .catch(() => { if (!cancelled) setAuth(AUTH.OUT) })
     return () => { cancelled = true }
   }, [location.pathname])
+
+  // Listen for live enrollment count updates via socket
+  useEffect(() => {
+    if (!socket) return
+    const handler = (data) => setEnrolled(data.count ?? 0)
+    socket.on('enrolled_count', handler)
+    return () => socket.off('enrolled_count', handler)
+  }, [socket])
+
+  // Called by EnrollQueueProvider when a student is enrolled successfully
+  const handleEnrolled = useCallback(() => {
+    setEnrolled(n => n + 1)
+  }, [])
 
   // Loading spinner while checking
   if (auth === AUTH.CHECKING) {
@@ -58,7 +72,7 @@ export default function App() {
 
   // Main SPA
   return (
-    <Layout enrolledCount={enrolled}>
+    <Layout enrolledCount={enrolled} onEnrolled={handleEnrolled}>
       <Routes>
         <Route path="/"         element={<Dashboard />} />
         <Route path="/cameras"  element={<Cameras />} />

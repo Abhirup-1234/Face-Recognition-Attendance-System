@@ -306,7 +306,49 @@ def _register_routes(app: Flask, limiter=None):
         db.log_audit("DELETE_STUDENT",
                      f"Deleted {student['name'] if student else student_id} ({student_id})",
                      _get_username())
+        socketio.emit('enrolled_count', {'count': get_enrolled_count()})
         return jsonify({"ok": True})
+
+    @app.route("/api/students/<student_id>", methods=["PUT"])
+    @login_required
+    def api_update_student(student_id):
+        data       = request.json or {}
+        name       = data.get("name",       "").strip()
+        class_name = data.get("class_name", "").strip()
+        stream     = data.get("stream",     "").strip()
+        section    = data.get("section",    "").strip().upper()
+        roll_no    = int(data.get("roll_no", 0) or 0)
+        if not all([name, class_name, section]):
+            return jsonify({"error": "name, class_name, section required"}), 400
+        # Roll uniqueness check (skip if same student)
+        if roll_no > 0:
+            dupe = next((s for s in db.list_students(class_name, stream or None, section)
+                         if s["roll_no"] == roll_no and s["student_id"] != student_id), None)
+            if dupe:
+                return jsonify({"error":
+                    f"Roll No. {roll_no} already taken by "
+                    f"{dupe['name']} ({dupe['student_id']}) "
+                    f"in Class {class_name}"
+                    f"{' / ' + stream if stream else ''} Sec {section}."}), 409
+        if db.update_student(student_id, name, class_name, stream, section, roll_no):
+            db.log_audit("UPDATE_STUDENT",
+                         f"Updated {name} ({student_id}) → {class_name} {section}",
+                         _get_username())
+            return jsonify({"ok": True})
+        return jsonify({"error": "Student not found or update failed"}), 404
+
+    @app.route("/api/students/<student_id>/photo")
+    @login_required
+    def api_student_photo(student_id):
+        student = db.get_student(student_id)
+        if not student or not student.get("photo_path"):
+            return jsonify({"error": "No photo"}), 404
+        photo = Path(student["photo_path"])
+        if not photo.exists():
+            return jsonify({"error": "Photo file missing"}), 404
+        from flask import send_file
+        return send_file(str(photo), mimetype="image/jpeg")
+
 
     @app.route("/api/enroll", methods=["POST"])
     @login_required
@@ -363,6 +405,7 @@ def _register_routes(app: Flask, limiter=None):
             if ok:
                 db.log_audit("ENROLL_STUDENT",
                              f"Enrolled {name} ({sid}) Class {class_name}", _get_username())
+                socketio.emit('enrolled_count', {'count': get_enrolled_count()})
                 return jsonify({"ok": True, "student_id": sid})
             return jsonify({"error": "No face detected in uploaded images"}), 422
         finally:

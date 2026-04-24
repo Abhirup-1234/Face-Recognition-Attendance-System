@@ -256,6 +256,23 @@ def delete_student(student_id: str):
         conn.execute("UPDATE students SET is_active=0 WHERE student_id=?", (student_id,))
 
 
+def update_student(student_id: str, name: str, class_name: str,
+                   stream: str = "", section: str = "",
+                   roll_no: int = 0) -> bool:
+    """Update editable metadata for an existing student."""
+    try:
+        with get_db() as conn:
+            conn.execute(
+                """UPDATE students SET name=?, class_name=?, stream=?, section=?, roll_no=?
+                   WHERE student_id=? AND is_active=1""",
+                (name, class_name, stream, section.upper(), roll_no, student_id)
+            )
+        return True
+    except Exception as e:
+        log.error("update_student: %s", e)
+        return False
+
+
 # ── Classrooms ─────────────────────────────────────────────────────────────────
 
 def upsert_classroom(classroom_id: str, camera_id: str,

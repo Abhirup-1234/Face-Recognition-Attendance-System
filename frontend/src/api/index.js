@@ -35,12 +35,14 @@ export const stats = { get: () => request('GET', '/api/stats') }
 
 // ── Students ──────────────────────────────────────────────────────────────────
 export const students = {
-  list:   (cls, stream, section) => {
+  list:     (cls, stream, section) => {
     const qs = buildQS({ class: cls, stream, section })
     return request('GET', `/api/students${qs ? '?' + qs : ''}`)
   },
-  remove: (id)       => request('DELETE', `/api/students/${id}`),
-  enroll: (formData) => request('POST', '/api/enroll', formData, true),
+  remove:   (id)       => request('DELETE', `/api/students/${id}`),
+  update:   (id, data) => request('PUT',    `/api/students/${id}`, data),
+  enroll:   (formData) => request('POST',   '/api/enroll', formData, true),
+  photoUrl: (id)       => `/api/students/${encodeURIComponent(id)}/photo`,
 }
 
 // ── Cameras ───────────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ export default function Manage() {
     <div>
       <div className="tabbar" style={{maxWidth:580,marginBottom:20}}>
         <button className={`tabbtn${tab==='students'?' active':''}`} onClick={()=>setTab('students')}>◊ Students</button>
-        <button className={`tabbtn${tab==='classes'?' active':''}`} onClick={()=>setTab('classes')}>⌾ Classes & Sections</button>
+        <button className={`tabbtn${tab==='classes'?' active':''}`} onClick={()=>setTab('classes')}>⌾ Classes &amp; Sections</button>
         <button className={`tabbtn${tab==='cameras'?' active':''}`} onClick={()=>setTab('cameras')}>📷 Camera Assignments</button>
       </div>
       {tab==='students' && <StudentsTab/>}
@@ -130,7 +130,7 @@ function ClassesTab() {
       {/* Class list — scrollable so page never grows unbounded */}
       <div className="card" style={{display:'flex',flexDirection:'column', height: 'calc(100vh - 200px)', minHeight: 400}}>
         <div className="card-title flex-sb" style={{flexShrink:0}}>
-          <span><span className="card-icon">▦</span> Classes & Sections</span>
+          <span><span className="card-icon">▦</span> Classes &amp; Sections</span>
           <span style={{fontSize:12,color:'var(--text3)'}}>{classList.length} class(es)</span>
         </div>
         <div style={{overflowY:'auto',flex:1,marginRight:-4,paddingRight:4}}>
@@ -245,6 +245,166 @@ function CamerasTab() {
   )
 }
 
+// ── Edit Student Modal ────────────────────────────────────────────────────────
+function EditStudentModal({ student, classList, onClose, onSaved }) {
+  const [name,       setName]       = useState(student.name)
+  const [classVal,   setClassVal]   = useState(student.class_name)
+  const [streamVal,  setStreamVal]  = useState(student.stream || '')
+  const [section,    setSection]    = useState(student.section)
+  const [rollNo,     setRollNo]     = useState(student.roll_no || '')
+  const [streamList, setStreamList] = useState([])
+  const [sectionList,setSectionList]= useState([])
+  const [saving,     setSaving]     = useState(false)
+  const toast = useToast()
+
+  useEffect(() => {
+    setStreamVal(''); setSectionList([]); setStreamList([])
+    if (!classVal) return
+    streamsApi.list(classVal).then(r => {
+      if (r?.ok && r.data.length > 0) setStreamList(r.data)
+      else if (r?.ok) {
+        sectionsApi.list(classVal, '').then(sr => {
+          if (sr?.ok) setSectionList(sr.data)
+        })
+      }
+    })
+  }, [classVal])
+
+  useEffect(() => {
+    setSectionList([])
+    if (!classVal) return
+    if (streamList.length > 0 && !streamVal) return
+    sectionsApi.list(classVal, streamVal).then(r => {
+      if (r?.ok) setSectionList(r.data)
+    })
+  }, [classVal, streamVal, streamList.length])
+
+  // Restore original stream/section after loading
+  useEffect(() => {
+    if (streamList.length > 0) setStreamVal(student.stream || '')
+  }, [streamList])
+  useEffect(() => {
+    if (sectionList.length > 0) setSection(student.section)
+  }, [sectionList])
+
+  const needsStream = streamList.length > 0
+
+  const save = async () => {
+    if (!name.trim()) { toast('Name is required.','warning'); return }
+    if (!classVal)    { toast('Class is required.','warning'); return }
+    if (!section)     { toast('Section is required.','warning'); return }
+    setSaving(true)
+    const res = await studentsApi.update(student.student_id, {
+      name: name.trim(), class_name: classVal,
+      stream: streamVal, section, roll_no: parseInt(rollNo) || 0,
+    })
+    setSaving(false)
+    if (res?.data?.ok) {
+      toast(`${name} updated.`, 'success')
+      onSaved()
+    } else {
+      toast(res?.data?.error || 'Failed to update.', 'error')
+    }
+  }
+
+  return (
+    <div style={{
+      position:'fixed', inset:0, zIndex:2000,
+      display:'flex', alignItems:'center', justifyContent:'center',
+      background:'rgba(0,0,0,.6)', backdropFilter:'blur(4px)',
+    }} onClick={e => e.target===e.currentTarget && onClose()}>
+      <div style={{
+        background:'var(--surface)', border:'1px solid var(--border)',
+        borderRadius:'var(--radius)', padding:28, width:520, maxWidth:'95vw',
+        boxShadow:'0 16px 48px rgba(0,0,0,.5)',
+        fontFamily:"'Sora', sans-serif",
+      }}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+          <div style={{fontSize:15,fontWeight:700,color:'var(--text)'}}>✏ Edit Student</div>
+          <button onClick={onClose} style={{
+            background:'none', border:'none', color:'var(--text3)',
+            fontSize:20, cursor:'pointer', lineHeight:1, padding:'2px 6px',
+          }}>×</button>
+        </div>
+
+        <div style={{fontSize:11.5,color:'var(--text3)',marginBottom:16,fontFamily:'Space Mono,monospace'}}>
+          ID: {student.student_id}
+        </div>
+
+        {/* Photo preview */}
+        {student.photo_path && (
+          <div style={{display:'flex',justifyContent:'center',marginBottom:16}}>
+            <img
+              src={studentsApi.photoUrl(student.student_id)}
+              alt={student.name}
+              style={{
+                width:80, height:80, borderRadius:'50%', objectFit:'cover',
+                border:'2px solid var(--border)',
+                boxShadow:'0 2px 12px rgba(0,0,0,.3)',
+              }}
+              onError={e=>{ e.currentTarget.style.display='none' }}
+            />
+          </div>
+        )}
+
+        <div className="form-row" style={{marginBottom:14}}>
+          <div className="form-group">
+            <label className="form-label">Full Name <span className="required">*</span></label>
+            <input className="form-input" value={name} onChange={e=>setName(e.target.value)} placeholder="Student name" />
+          </div>
+        </div>
+
+        <div className="form-row3" style={{marginBottom:14}}>
+          <div className="form-group">
+            <label className="form-label">Class <span className="required">*</span></label>
+            <select className="form-select" value={classVal} onChange={e=>setClassVal(e.target.value)}>
+              <option value="">Select class</option>
+              {classList.map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          {needsStream && (
+            <div className="form-group">
+              <label className="form-label">Stream <span className="required">*</span></label>
+              <select className="form-select" value={streamVal} onChange={e=>setStreamVal(e.target.value)}>
+                <option value="">Select stream</option>
+                {streamList.map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="form-group">
+            <label className="form-label">Section <span className="required">*</span></label>
+            {sectionList.length > 0 ? (
+              <select className="form-select" value={section} onChange={e=>setSection(e.target.value)}>
+                <option value="">Select section</option>
+                {sectionList.map(s=><option key={s} value={s}>Section {s}</option>)}
+              </select>
+            ) : (
+              <input className="form-input" value={section}
+                onChange={e=>setSection(e.target.value.toUpperCase())}
+                placeholder="Section" maxLength={3}/>
+            )}
+          </div>
+        </div>
+
+        <div className="form-row" style={{marginBottom:20}}>
+          <div className="form-group">
+            <label className="form-label">Roll Number</label>
+            <input className="form-input" type="number" min="1" value={rollNo}
+              onChange={e=>setRollNo(e.target.value)} placeholder="Roll number" />
+          </div>
+        </div>
+
+        <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Students tab ──────────────────────────────────────────────────────────────
 function StudentsTab() {
   const [students,   setStudents]   = useState([])
@@ -254,6 +414,7 @@ function StudentsTab() {
   const [activeSec,  setActiveSec]  = useState('')
   const [activeStream,setActiveStream]=useState('')
   const [search,     setSearch]     = useState('')
+  const [editTarget, setEditTarget] = useState(null) // student being edited
   const toast = useToast()
 
   const loadAll = useCallback(async () => {
@@ -301,65 +462,102 @@ function StudentsTab() {
   })
 
   return (
-    <div className="card">
-      <div className="card-title flex-sb" style={{flexWrap:'wrap',gap:10}}>
-        <span><span className="card-icon">◊</span> Enrolled Students ({students.length})</span>
-        <input className="form-input" style={{maxWidth:180,padding:'6px 10px',fontSize:12.5}}
-          placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}/>
-      </div>
+    <>
+      {editTarget && (
+        <EditStudentModal
+          student={editTarget}
+          classList={classes}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => { setEditTarget(null); loadAll() }}
+        />
+      )}
+      <div className="card">
+        <div className="card-title flex-sb" style={{flexWrap:'wrap',gap:10}}>
+          <span><span className="card-icon">◊</span> Enrolled Students ({students.length})</span>
+          <input className="form-input" style={{maxWidth:180,padding:'6px 10px',fontSize:12.5}}
+            placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}/>
+        </div>
 
-      {/* Class chips */}
-      <div className="chips" style={{marginBottom:8}}>
-        <button className={`chip${!activeClass?' active':''}`} onClick={()=>setActiveClass('')}>All</button>
-        {classes.map(c=>(
-          <button key={c} className={`chip${activeClass===c?' active':''}`} onClick={()=>setActiveClass(c)}>{c}</button>
-        ))}
-      </div>
-
-      {/* Stream chips — XI/XII only */}
-      {isStreamClass && (
+        {/* Class chips */}
         <div className="chips" style={{marginBottom:8}}>
-          <button className={`chip${!activeStream?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveStream('')}>All Streams</button>
-          {FIXED_STREAMS.map(s=>(
-            <button key={s} className={`chip${activeStream===s?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveStream(s)}>{s}</button>
+          <button className={`chip${!activeClass?' active':''}`} onClick={()=>setActiveClass('')}>All</button>
+          {classes.map(c=>(
+            <button key={c} className={`chip${activeClass===c?' active':''}`} onClick={()=>setActiveClass(c)}>{c}</button>
           ))}
         </div>
-      )}
 
-      {/* Section chips */}
-      {currentSections.length>0 && (
-        <div className="chips" style={{marginBottom:16}}>
-          <button className={`chip${!activeSec?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveSec('')}>All Sections</button>
-          {currentSections.map(s=>(
-            <button key={s} className={`chip${activeSec===s?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveSec(s)}>Section {s}</button>
-          ))}
+        {/* Stream chips — XI/XII only */}
+        {isStreamClass && (
+          <div className="chips" style={{marginBottom:8}}>
+            <button className={`chip${!activeStream?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveStream('')}>All Streams</button>
+            {FIXED_STREAMS.map(s=>(
+              <button key={s} className={`chip${activeStream===s?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveStream(s)}>{s}</button>
+            ))}
+          </div>
+        )}
+
+        {/* Section chips */}
+        {currentSections.length>0 && (
+          <div className="chips" style={{marginBottom:16}}>
+            <button className={`chip${!activeSec?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveSec('')}>All Sections</button>
+            {currentSections.map(s=>(
+              <button key={s} className={`chip${activeSec===s?' active':''}`} style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setActiveSec(s)}>Section {s}</button>
+            ))}
+          </div>
+        )}
+
+        <div className="table-wrap" style={{maxHeight:540,overflowY:'auto'}}>
+          <table>
+            <thead><tr><th>Name</th><th>Student ID</th><th>Class</th><th>Stream</th><th>Sec</th><th>Roll</th><th>Enrolled On</th><th>Face Data</th><th style={{minWidth:110}}></th></tr></thead>
+            <tbody>
+              {filtered.length===0 ? <tr><td colSpan={9} className="empty" style={{padding:40}}>No students found.</td></tr>
+                : filtered.map(s=>(
+                  <tr key={s.student_id}>
+                    <td><div className="flex">
+                      {s.photo_path ? (
+                        <img
+                          src={studentsApi.photoUrl(s.student_id)}
+                          alt={s.name}
+                          style={{
+                            width:30, height:30, borderRadius:'50%', objectFit:'cover',
+                            flexShrink:0, border:'1px solid var(--border)',
+                          }}
+                          onError={e=>{
+                            e.currentTarget.style.display='none'
+                            e.currentTarget.nextSibling?.style && (e.currentTarget.nextSibling.style.display='flex')
+                          }}
+                        />
+                      ) : null}
+                      <div className="log-av" style={{
+                        width:30, height:30, fontSize:11,
+                        display: s.photo_path ? 'none' : 'flex',
+                      }}>{(s.name||'XX').slice(0,2).toUpperCase()}</div>
+                      <span className="td-name">{s.name}</span>
+                    </div></td>
+                    <td style={{fontFamily:'Space Mono,monospace',fontSize:12,color:'var(--text3)'}}>{s.student_id}</td>
+                    <td><span className="badge badge-blue">{s.class_name}</span></td>
+                    <td style={{fontSize:12,color:'var(--text3)'}}>{s.stream||'—'}</td>
+                    <td style={{fontFamily:'Space Mono,monospace',fontSize:12}}>{s.section}</td>
+                    <td style={{fontFamily:'Space Mono,monospace',fontSize:12}}>{s.roll_no}</td>
+                    <td style={{fontSize:12,color:'var(--text3)'}}>{(s.enrolled_at||'').slice(0,10)}</td>
+                    <td><span className={`badge ${s.photo_path?'badge-green':'badge-red'}`}>{s.photo_path?'Enrolled':'No face data'}</span></td>
+                    <td>
+                      <div style={{display:'flex',gap:6}}>
+                        <button className="btn btn-ghost btn-sm"
+                          onClick={()=>setEditTarget(s)}
+                          style={{fontSize:11,padding:'3px 10px'}}
+                        >✏ Edit</button>
+                        <button className="btn btn-danger btn-sm"
+                          onClick={()=>remove(s.student_id,s.name)}
+                        >Remove</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
         </div>
-      )}
-
-      <div className="table-wrap" style={{maxHeight:540,overflowY:'auto'}}>
-        <table>
-          <thead><tr><th>Name</th><th>Student ID</th><th>Class</th><th>Stream</th><th>Sec</th><th>Roll</th><th>Enrolled On</th><th>Face Data</th><th></th></tr></thead>
-          <tbody>
-            {filtered.length===0 ? <tr><td colSpan={9} className="empty" style={{padding:40}}>No students found.</td></tr>
-              : filtered.map(s=>(
-                <tr key={s.student_id}>
-                  <td><div className="flex">
-                    <div className="log-av" style={{width:30,height:30,fontSize:11}}>{(s.name||'XX').slice(0,2).toUpperCase()}</div>
-                    <span className="td-name">{s.name}</span>
-                  </div></td>
-                  <td style={{fontFamily:'Space Mono,monospace',fontSize:12,color:'var(--text3)'}}>{s.student_id}</td>
-                  <td><span className="badge badge-blue">{s.class_name}</span></td>
-                  <td style={{fontSize:12,color:'var(--text3)'}}>{s.stream||'—'}</td>
-                  <td style={{fontFamily:'Space Mono,monospace',fontSize:12}}>{s.section}</td>
-                  <td style={{fontFamily:'Space Mono,monospace',fontSize:12}}>{s.roll_no}</td>
-                  <td style={{fontSize:12,color:'var(--text3)'}}>{(s.enrolled_at||'').slice(0,10)}</td>
-                  <td><span className={`badge ${s.photo_path?'badge-green':'badge-red'}`}>{s.photo_path?'Enrolled':'No face data'}</span></td>
-                  <td><button className="btn btn-danger btn-sm" onClick={()=>remove(s.student_id,s.name)}>Remove</button></td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
       </div>
-    </div>
+    </>
   )
 }
