@@ -90,8 +90,8 @@ RATE_LIMIT_LOGIN = "5/minute"
 # ── Cameras ────────────────────────────────────────────────────────────────────
 CAMERAS = {
         "CAM-101": 1,
-        # "ACTORS": "testvid2.mp4"
-        # "HARRY POTTER": "C:/Users/Abhirup/Desktop/Dataset/Harry Potter/Testing"
+        "ACTORS": "C:/Users/Abhirup/Desktop/Dataset/testvid2.mp4",
+        "HARRY POTTER": "C:/Users/Abhirup/Desktop/Dataset/Harry Potter/Testing"
     }
 FRAME_WIDTH        = 1280
 FRAME_HEIGHT       = 720

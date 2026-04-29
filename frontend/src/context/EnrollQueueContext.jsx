@@ -6,7 +6,6 @@ const EnrollQueueContext = createContext(null)
 export function EnrollQueueProvider({ children, onEnrolled }) {
   const [queue,    setQueue]    = useState([])   // exposed so consumers can watch length
   const [current,  setCurrent]  = useState(null) // item currently being processed
-  const [progress, setProgress] = useState(0)    // 0–100
   const processing = useRef(false)
 
   // Process items one by one
@@ -16,7 +15,6 @@ export function EnrollQueueProvider({ children, onEnrolled }) {
 
     const item = q[0]
     setCurrent(item)
-    setProgress(0)
 
     try {
       // Build FormData
@@ -35,16 +33,7 @@ export function EnrollQueueProvider({ children, onEnrolled }) {
         else                      fd.append('photos', img)
       })
 
-      // Fake progress while uploading
-      let tick = 0
-      const timer = setInterval(() => {
-        tick += Math.random() * 12
-        setProgress(Math.min(tick, 90))
-      }, 300)
-
       const res = await studentsApi.enroll(fd)
-      clearInterval(timer)
-      setProgress(100)
 
       if (res?.data?.ok) {
         // Notify App.jsx to increment the sidebar count live
@@ -56,12 +45,11 @@ export function EnrollQueueProvider({ children, onEnrolled }) {
       console.error('Enrollment error:', err)
     }
 
-    await new Promise(r => setTimeout(r, 600)) // brief pause so user sees 100%
+    await new Promise(r => setTimeout(r, 600)) // brief pause so user sees completion
 
     setQueue(prev => {
       const next = prev.slice(1)
       setCurrent(null)
-      setProgress(0)
       processing.current = false
       // Recursively process the next item
       setTimeout(() => processNext(next), 50)
@@ -88,7 +76,7 @@ export function EnrollQueueProvider({ children, onEnrolled }) {
   }, [])
 
   return (
-    <EnrollQueueContext.Provider value={{ addToQueue, removeFromQueue, queue, current, progress }}>
+    <EnrollQueueContext.Provider value={{ addToQueue, removeFromQueue, queue, current }}>
       {children}
     </EnrollQueueContext.Provider>
   )

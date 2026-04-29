@@ -972,3 +972,13 @@ code {
 @keyframes rec-blink {
   0%,100% { opacity: 1; } 50% { opacity: .3; }
 }
+
+/* ── Enrollment progress shimmer (indeterminate) ──────────────────────────── */
+@keyframes enroll-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.enroll-progress-shimmer {
+  width: 50% !important;
+  animation: enroll-shimmer 1.4s ease-in-out infinite;
+}

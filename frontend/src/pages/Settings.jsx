@@ -38,7 +38,7 @@ export default function Settings() {
   const toast = useToast()
 
   const [s, setS] = useState({
-    REC_THRESHOLD:          0.40,
+    REC_THRESHOLD:          0.50,
     DET_THRESH:             0.50,
     CONFIRM_FRAMES:         3,
     EMBEDDINGS_PER_STUDENT: 20,

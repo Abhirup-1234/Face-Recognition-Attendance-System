@@ -47,6 +47,21 @@ def close_db():
         _local.conn = None
 
 
+def close_all_connections():
+    """Close the thread-local connection.
+
+    Called before DB file replacement (backup restore, reset) so the
+    next query opens a fresh connection to the new file.
+    """
+    close_db()
+
+
+def reinit_db():
+    """Re-open DB and re-run schema creation after a file replacement."""
+    close_all_connections()
+    init_db()
+
+
 def init_db():
     with get_db() as conn:
         conn.executescript("""
@@ -89,41 +104,16 @@ def init_db():
                 UNIQUE(class_name, stream, section)
             );
 
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                action     TEXT NOT NULL,
-                details    TEXT DEFAULT '',
-                username   TEXT DEFAULT ''
-            );
-
             CREATE INDEX IF NOT EXISTS idx_att_student_date ON attendance(student_id, date);
             CREATE INDEX IF NOT EXISTS idx_att_date         ON attendance(date);
-            CREATE INDEX IF NOT EXISTS idx_audit_ts         ON audit_log(timestamp);
         """)
     log.info("Database ready at %s", config.DB_PATH)
 
 
-# ── Audit logging ──────────────────────────────────────────────────────────────
-
-def log_audit(action: str, details: str = "", username: str = ""):
-    """Record a destructive or significant action for audit trail."""
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO audit_log (action, details, username) VALUES (?,?,?)",
-                (action, details, username)
-            )
-    except Exception as e:
-        log.warning("Failed to write audit log: %s", e)
-
-
-def get_audit_log(limit: int = 100) -> List[Dict]:
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+# ── Audit logging (removed) ────────────────────────────────────────────────────
+# log_audit / get_audit_log removed — audit trail is no longer persisted.
+def log_audit(action: str, details: str = "", username: str = ""):  # kept as no-op for call-site compatibility
+    pass
 
 
 # ── Class sections ─────────────────────────────────────────────────────────────
@@ -373,11 +363,15 @@ def clear_all_attendance() -> bool:
 
 
 def reset_all_data() -> bool:
-    """Clear all attendance and deactivate all students."""
+    """Hard-delete ALL students and attendance records.
+
+    Uses DELETE (not soft-deactivation) so re-enrollment starts with a
+    completely clean database and there are no ghost records.
+    """
     try:
         with get_db() as conn:
             conn.execute("DELETE FROM attendance")
-            conn.execute("UPDATE students SET is_active=0")
+            conn.execute("DELETE FROM students")
         return True
     except Exception as e:
         log.error("reset_all_data: %s", e)

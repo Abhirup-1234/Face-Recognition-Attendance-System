@@ -53,28 +53,26 @@ if __name__ == "__main__":
     startup(app)
 
     # ── Production server ──────────────────────────────────────────────────────
-    # Use Waitress (Windows-native, multi-threaded WSGI) instead of the
-    # Flask development server.  Flask-SocketIO falls back to HTTP long-polling
-    # automatically which works perfectly on a LAN.
+    # Waitress: Windows-native, multi-threaded WSGI server.
+    # Flask-SocketIO falls back to HTTP long-polling (no WebSocket needed on LAN).
     try:
         from waitress import serve
-        log.info("Starting Waitress production server on %s:%s", config.HOST, config.PORT)
+        log.info("Starting Waitress on %s:%s ...", config.HOST, config.PORT)
         serve(
             app,
             host=config.HOST,
             port=config.PORT,
-            threads=8,              # 8 worker threads — plenty for a school LAN
-            channel_timeout=120,    # 2-minute idle timeout
+            threads=8,
+            channel_timeout=120,
             url_scheme="http",
         )
     except ImportError:
-        # Fallback to dev server if waitress is not installed
-        log.warning("waitress not installed — falling back to development server.")
-        log.warning("Install with: pip install waitress")
+        log.warning("waitress not installed — using Flask-SocketIO dev server.")
         socketio.run(
             app,
             host=config.HOST,
             port=config.PORT,
             debug=False,
             use_reloader=False,
+            allow_unsafe_werkzeug=True,
         )

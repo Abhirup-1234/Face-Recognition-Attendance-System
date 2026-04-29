@@ -2,6 +2,11 @@
 Face detection (RetinaFace) + recognition (ArcFace) via InsightFace.
 Models are downloaded automatically on first run into ~/.insightface/models/
 No manual model download required.
+
+IMPORTANT: Do NOT apply custom preprocessing (CLAHE, gamma, bilateral filter)
+to frames before passing them to InsightFace.  ArcFace was trained on clean,
+aligned face crops — modifying pixel distributions causes embedding drift
+and random/wrong recognition.
 """
 import threading
 import logging
@@ -11,10 +16,8 @@ from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 
 import config
-from preprocessing import enhance_frame
 
 log = logging.getLogger(__name__)
 
@@ -31,13 +34,22 @@ class FaceResult:
 
 
 class EmbeddingStore:
-    """Thread-safe store — holds mean embedding per student."""
+    """Thread-safe store — computes and caches a mean (centroid) embedding
+    per student.  Cosine similarity between the query and each student centroid
+    is fast and robust for clean (non-augmented) enrolment sets."""
 
     def __init__(self):
         self._lock   = threading.RLock()
-        self._raw:    dict                  = {}
+        self._raw:    dict                  = {}   # sid -> list of L2-normed ndarray
         self._ids:    List[str]             = []
-        self._matrix: Optional[np.ndarray] = None
+        self._matrix: Optional[np.ndarray] = None  # (N, 512) centroid matrix
+
+    def clear(self):
+        """Wipe all embeddings.  Call before a full reload to prevent ghosts."""
+        with self._lock:
+            self._raw.clear()
+            self._ids    = []
+            self._matrix = None
 
     def add(self, student_id: str, embeddings: List[np.ndarray]):
         with self._lock:
@@ -51,22 +63,24 @@ class EmbeddingStore:
 
     def _rebuild(self):
         with self._lock:
-            ids, means = [], []
+            ids, centroids = [], []
             for sid, embs in self._raw.items():
-                mean = np.mean(embs, axis=0)
-                n    = np.linalg.norm(mean)
+                centroid = np.mean(embs, axis=0).astype(np.float32)
+                n = np.linalg.norm(centroid)
                 if n > 1e-10:
-                    mean /= n
+                    centroid /= n
                 ids.append(sid)
-                means.append(mean)
+                centroids.append(centroid)
             self._ids    = ids
-            self._matrix = np.array(means, dtype=np.float32) if means else None
+            self._matrix = np.stack(centroids, axis=0) if centroids else None
 
     def query(self, emb: np.ndarray) -> Tuple[Optional[str], float]:
         with self._lock:
             if self._matrix is None or not self._ids:
                 return None, 0.0
-            sims = cosine_similarity(emb.reshape(1, -1), self._matrix)[0]
+            n = np.linalg.norm(emb)
+            q = (emb / n) if n > 1e-10 else emb
+            sims = self._matrix @ q          # (N,) cosine similarities
             best = int(np.argmax(sims))
             return self._ids[best], float(sims[best])
 
@@ -127,7 +141,17 @@ class FaceEngine:
     # ── Enrollment ──────────────────────────────────────────────────────────────
 
     def load_known_faces(self):
+        """Reload all embeddings from disk into the in-memory store.
+
+        IMPORTANT: clears the store first so stale ghost embeddings left
+        over from previous enrollments (or a Reset) cannot persist.
+        """
         import database as db
+
+        # ── Clear everything before rebuilding ──────────────────────────────
+        self._store.clear()
+        self._student_names = {}
+
         students = db.list_students()
         self._student_names = {s["student_id"]: s["name"] for s in students}
         loaded = 0
@@ -138,7 +162,7 @@ class FaceEngine:
                 embs = embs.reshape(1, -1)
             self._store.add(sid, list(embs))
             loaded += 1
-        log.info("Loaded embeddings for %d student(s).", loaded)
+        log.info("Loaded embeddings for %d student(s) (store cleared before reload).", loaded)
         return loaded
 
     def reload_student(self, student_id: str):
@@ -187,21 +211,20 @@ class FaceEngine:
     # ── Detection ───────────────────────────────────────────────────────────────
 
     def detect(self, bgr: np.ndarray) -> List[FaceResult]:
+        """Detect faces and extract ArcFace embeddings.
+
+        NO custom preprocessing (CLAHE, gamma, bilateral) is applied here.
+        InsightFace does its own internal alignment and normalisation on
+        each detected face crop.  Altering pixel distributions beforehand
+        causes embedding drift and random recognition.
+        """
         bgr = self._normalise(bgr)
         if bgr is None:
             return []
 
+        # Pass the clean frame directly to InsightFace (expects BGR)
         try:
-            enhanced, scale = enhance_frame(bgr)
-        except Exception as e:
-            log.warning("Preprocessing failed: %s", e)
-            enhanced, scale = bgr, 1.0
-
-        # InsightFace expects RGB
-        rgb = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
-
-        try:
-            raw_faces = self._app.get(rgb)
+            raw_faces = self._app.get(bgr)
         except Exception as e:
             log.warning("RetinaFace detection error: %s", e)
             return []
@@ -215,8 +238,6 @@ class FaceEngine:
             x1, y1, x2, y2 = f.bbox.astype(int)
             # Convert to (x, y, w, h) for draw_results compatibility
             bbox = np.array([x1, y1, x2 - x1, y2 - y1], dtype=np.float32)
-            if scale != 1.0:
-                bbox /= scale
 
             emb = f.embedding.copy().flatten().astype(np.float32)
             n = np.linalg.norm(emb)

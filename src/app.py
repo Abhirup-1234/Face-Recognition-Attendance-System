@@ -818,16 +818,34 @@ a{color:#3fb950}
     @app.route("/api/backup/create", methods=["POST"])
     @login_required
     def api_backup_create():
-        """Create a timestamped zip of all data and return it as a download."""
+        """Create a timestamped zip of all data and return it as a download.
+
+        Uses SQLite's backup() API to safely copy the database while it
+        may be in use by other threads (WAL mode, concurrent writes).
+        """
+        import sqlite3 as _sqlite3
         try:
             ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
             name = f"facetrack_backup_{ts}.zip"
             buf  = io.BytesIO()
 
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                # Database
+                # Database — safe backup via SQLite backup API
                 if config.DB_PATH.exists():
-                    zf.write(config.DB_PATH, "data/attendance.db")
+                    db_buf = io.BytesIO()
+                    src_conn = _sqlite3.connect(str(config.DB_PATH))
+                    mem_conn = _sqlite3.connect(":memory:")
+                    src_conn.backup(mem_conn)
+                    src_conn.close()
+                    # Dump memory DB to bytes
+                    tmp_path = config.BACKUP_DIR / f"_tmp_{ts}.db"
+                    mem_conn2 = _sqlite3.connect(str(tmp_path))
+                    mem_conn.backup(mem_conn2)
+                    mem_conn.close()
+                    mem_conn2.close()
+                    zf.write(tmp_path, "data/attendance.db")
+                    tmp_path.unlink(missing_ok=True)
+
                 # Embeddings
                 for f in config.EMBEDDINGS_DIR.rglob("*"):
                     if f.is_file():
@@ -858,7 +876,12 @@ a{color:#3fb950}
     @app.route("/api/backup/restore", methods=["POST"])
     @login_required
     def api_backup_restore():
-        """Restore data from an uploaded backup zip, then auto-restart cameras."""
+        """Restore data from an uploaded backup zip, then auto-restart cameras.
+
+        IMPORTANT: closes all DB connections before overwriting the database
+        file, then reinitialises.  Without this, stale thread-local SQLite
+        handles continue reading the old (deleted) database.
+        """
         if "backup" not in request.files:
             return jsonify({"error": "No file provided"}), 400
         f = request.files["backup"]
@@ -876,10 +899,16 @@ a{color:#3fb950}
                 if camera_manager:
                     camera_manager.stop_all()
 
+                # Close ALL DB connections before overwriting the file
+                db.close_all_connections()
+
                 # Restore database
                 if "data/attendance.db" in names:
                     config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
                     config.DB_PATH.write_bytes(zf.read("data/attendance.db"))
+
+                # Reinitialise DB connection to point at the new file
+                db.reinit_db()
 
                 # Restore embeddings
                 shutil.rmtree(config.EMBEDDINGS_DIR, ignore_errors=True)
@@ -909,7 +938,7 @@ a{color:#3fb950}
             if engine:
                 engine.load_known_faces()
 
-            # Auto-restart cameras (Option A)
+            # Auto-restart cameras
             if camera_manager:
                 camera_manager.start_all()
 
@@ -929,6 +958,8 @@ a{color:#3fb950}
             db.reset_all_data()
             shutil.rmtree(config.EMBEDDINGS_DIR, ignore_errors=True)
             config.EMBEDDINGS_DIR.mkdir(exist_ok=True)
+            shutil.rmtree(config.STUDENT_IMG_DIR, ignore_errors=True)
+            config.STUDENT_IMG_DIR.mkdir(exist_ok=True)
             if engine: engine.load_known_faces()
             db.log_audit("RESET_ALL", "Full system reset — all data cleared", _get_username())
             return jsonify({"ok": True})
